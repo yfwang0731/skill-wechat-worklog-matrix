@@ -1,6 +1,3 @@
-# 备份目录（darwin 审查/修复时的回滚快照，不入库）
-.bak-*/
-
 # Python 缓存
 __pycache__/
 *.pyc
