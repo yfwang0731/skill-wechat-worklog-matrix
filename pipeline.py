@@ -115,25 +115,41 @@ def cmd_run(args):
             "（合规提示：第三方灰色工具，只读本机，使用前向用户确认。）"
         )
 
+    # 路径统一：以"运行 pipeline 的目录"为基准解析为绝对路径后再传给子进程。
+    # （子进程 cwd 是 scripts/，若不显式传路径，相对目录会被解析到 scripts/ 下，
+    #   导致解密产物与导出读取位置不一致、打印给用户的路径也找不到文件）
+    acct = cfg.get("account", {}) or {}
+    out_cfg = cfg.get("output", {}) or {}
+    base_abs = os.path.abspath(out_cfg.get("dir") or "./wechat_pilot")
+    tx_dir = os.path.join(base_abs, "transcripts")
+    out_sub = os.path.join(tx_dir, "_out")
+    decrypted = os.path.abspath(acct.get("decrypted") or os.path.join(base_abs, "output", "decrypted"))
+    db_storage = acct.get("db_storage") or None
+
     if not args.skip_decrypt:
-        rc = run("decrypt.py", *(["--reextract"] if args.reextract else []))
+        dcli = ["decrypt.py", "--output", decrypted]
+        if db_storage:
+            dcli += ["--db-storage", db_storage]
+        if args.reextract:
+            dcli += ["--reextract"]
+        rc = run(*dcli)
         if rc.returncode != 0:
             sys.exit("✗ 解密失败。确认微信前台登录后重试（必要时 --reextract）。")
 
-    cli = []
+    cli = ["export_conversations.py", "--decrypted", decrypted, "--out", tx_dir]
     if args.since:
         cli += ["--since", args.since]
-    rc = run("export_conversations.py", *cli)
+    rc = run(*cli)
     if rc.returncode != 0:
         sys.exit("✗ 导出失败，见上。")
 
-    n = (cfg.get("output", {}) or {}).get("agents", 6)
-    rc = run("split_for_agents.py", "--n", str(n))
+    n = out_cfg.get("agents", 6)
+    rc = run("split_for_agents.py", "--n", str(n),
+             "--transcripts", tx_dir, "--out", out_sub)
     if rc.returncode != 0:
         sys.exit("✗ 分包失败，见上。")
 
-    outdir = os.path.join((cfg.get("output", {}) or {}).get("dir", "./wechat_pilot"),
-                          "transcripts", "_out")
+    outdir = out_sub
     print("\n========== 下一步（需 LLM + 人工）==========")
     print(f"① 把 references/agent-prompt-zh.txt 模板 + 各 {outdir}/agent_N.txt 清单，")
     print(f"   交给 {n} 个并行子代理，产出 JSON 写到 {outdir}/。")
