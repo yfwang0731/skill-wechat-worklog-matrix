@@ -1,7 +1,8 @@
 # 需求识别子代理提示词模板（发给并行 agent，每 agent 一份 + 各自的文件清单）
 
 > 使用说明：把 {{...}} 占位符替换为 config.json 中对应值后再发给子代理。
-> 必填：{{处理人}} {{我方标识}} {{服务对象}} {{业务系统描述}}
+> 必填：{{处理人}}(←people.handler) {{我方标识}}(←people.my_identifiers) {{服务对象}} {{业务系统描述}}
+> 规则开关：下发前按 config.json rules.* 把【判断规则】默认句替换为文末【开关渲染表】对应句（默认全开=保持现文）。
 
 你在帮系统运维工程师【{{处理人}}】把微信聊天记录整理成"需求跟踪矩阵"。
 【{{处理人}}】的服务对象是【{{服务对象}}】，其使用的业务系统为：{{业务系统描述}}。
@@ -25,6 +26,14 @@
      outcome="default_done"，v_date=w_date=**对方提出消息的日期**；若明确拒绝→忽略。
    - 一条消息含多个需求→拆成多行。同一需求后续被对方催/重提：已按完成处理过则不新增；
      之前被忽略（拒绝/无回复）后重提且本次有结果→新增一行。
+
+【开关渲染表】下发前按 config.json rules.* 逐项确认；值为 false 时把【判断规则】中对应默认句替换为下列"关"态句（关态记下的行需人工裁决是否最终保留）：
+| 开关 | 开（默认=现文） | 关 |
+| rules.ignore_if_rejected | 我方明确拒绝 → 忽略，不输出 | 仍输出该行，outcome="rejected"，note 注明"我方已明确拒绝，待人工裁决"，v_date=w_date=提出日期 |
+| rules.ignore_if_no_reply | 提出后无实质回复 → 忽略 | 仍输出该行，outcome="no_reply"，note 注明"我方无回复，待跟进/人工裁决"，v_date=w_date=提出日期 |
+| rules.data_change_default_done | 数据修改类无完成无拒绝 → 默认完成 | 不默认完成，outcome="pending"，note 注明"未确认完成，待人工裁决"，v_date=w_date=提出日期 |
+> 其余开关不入本提示词：rules.reuse_position_column 决定是否跑 position_reuse；merge_cross_session / similarity_threshold / near_days / people.counterparty_keyword 由 build_matrix_rows 代码读取。
+
 3. 描述 L：一句话简略描述，带关键业务对象（单号/箱号/提单号/票号/功能名 + 改什么）。
    参考风格："ANTSQCY250789019 错误数据处理"、"锁帐时间调整到15号"、
    "付款申请更改核销金额时，增加不允许点击申请主体表保存按钮的控制"。
@@ -39,7 +48,7 @@
 格式为数组：
 [{"chat":"文件名","O":"姓名或ID","N":"岗位或空","ask_date":"YYYY-MM-DD","L":"描述",
   "Q":"数据处理|优化|需求|bug|答疑","R":"高|中|低|空","S":"1-5|空",
-  "outcome":"done|default_done","v_date":"YYYY-MM-DD","w_date":"YYYY-MM-DD",
+  "outcome":"done|default_done|rejected|no_reply|pending","v_date":"YYYY-MM-DD","w_date":"YYYY-MM-DD",
   "evidence":"关键原文含时间，最多两段（用于人工复核）",
   "note":"业务性补充；禁止写规则判定理由"}]
 只写要计入矩阵的行（被忽略的不写）。完成后回复：输出行数 + 每行摘要(O|L|outcome|date)。

@@ -63,7 +63,7 @@ def smoke_position_reuse():
 def main():
     full = "--full" in sys.argv
     print("== import 冒烟 ==")
-    check("8 个模块 import", smoke_imports)
+    check("6 个模块 import（--full 另含 position_reuse）", smoke_imports)
     print("== common 单测 ==")
     check("serial/col_index/col_letter", smoke_common)
     print("== build_matrix_rows 单测 ==")

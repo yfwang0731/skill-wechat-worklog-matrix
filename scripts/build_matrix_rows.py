@@ -180,6 +180,8 @@ def flag_dups(rows, cfg):
 PREVIEW_COLS = ["序号", "会话", "提出人", "提出人岗位", "提出时间", "需求描述", "需求归类",
                 "影响级别", "优先级", "结果", "计划时间", "完成时间", "跨会话标记", "证据节选", "备注"]
 QMAP = {"优化或需求": "需求"}
+OUTCOME_LABEL = {"done": "答复完成", "default_done": "默认完成(数据修改)",
+                 "rejected": "已拒绝(记录)", "no_reply": "无回复(记录)", "pending": "未确认完成"}
 
 
 def cmd_preview(args):
@@ -194,7 +196,7 @@ def cmd_preview(args):
             w.writerow([r["_i"], r.get("chat", ""), r["O"], r.get("N", ""), r.get("ask_date", ""),
                         r.get("L", ""), QMAP.get(r.get("Q", ""), r.get("Q", "")),
                         r.get("R", ""), r.get("S", ""),
-                        "答复完成" if r.get("outcome") == "done" else "默认完成(数据修改)",
+                        OUTCOME_LABEL.get(r.get("outcome"), r.get("outcome") or ""),
                         r.get("v_date", ""), r.get("w_date", ""), r.get("_flag", "").strip(),
                         ev[:180], r.get("note", "")])
     print(f"preview rows: {len(rows)} -> {args.out}")

@@ -33,8 +33,9 @@ python pipeline.py probe --workbook <你的需求矩阵.xlsx> --dump probe.json
 python pipeline.py run
 python scripts/build_matrix_rows.py preview --src <output.dir>/transcripts/_out --out merged_preview.csv
 python scripts/build_matrix_rows.py final --preview merged_preview.csv --remove "..." --merge "a:b"
-python scripts/position_reuse.py --workbook <xlsx> --out payload_n.json
+python scripts/position_reuse.py --workbook <xlsx> --out payload_n.json  # 默认只填空缺，--override 才覆盖；rules.reuse_position_column=false 时跳过
 #    （<output.dir>/transcripts/_out 即 run 产物目录，output.dir 默认 ./wechat_pilot）
+#    （派发判定子代理前，按 config 的 rules.*/people.my_identifiers 渲染 references/agent-prompt-zh.txt，勿发裸模板）
 #    用 tencent-local-office-edit 把 payload*.json 回填到目标子表
 ```
 
@@ -58,7 +59,7 @@ wechat-worklog-matrix/
 │   ├── export_conversations.py #   按 config 导出指定会话转录
 │   ├── split_for_agents.py     #   转录按文件大小均衡分 N 份给子代理
 │   ├── build_matrix_rows.py    #   preview（去重标记+裁决）/ final（生成回填 payload）
-│   ├── position_reuse.py       #   岗位列向上复用计划（原 n_reuse_plan.py）
+│   ├── position_reuse.py       #   岗位列向上复用计划（依 config 列映射；原名岗位复用脚本）
 │   ├── common.py               #   配置加载 / 路径识别 / 日期与列工具
 │   └── smoke_test.py           #   自检：import + 纯函数断言
 └── references/
