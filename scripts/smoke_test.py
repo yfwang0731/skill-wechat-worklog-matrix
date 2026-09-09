@@ -56,8 +56,8 @@ def smoke_build():
     assert QMAP  # 非空
 
 
-def smoke_n_reuse():
-    import n_reuse_plan      # noqa: F401  (需 openpyxl)
+def smoke_position_reuse():
+    import position_reuse      # noqa: F401  (需 openpyxl)
 
 
 def main():
@@ -69,10 +69,10 @@ def main():
     print("== build_matrix_rows 单测 ==")
     check("norm_o/ids/QMAP", smoke_build)
     if full:
-        print("== n_reuse_plan（需 openpyxl）==")
-        check("import n_reuse_plan", smoke_n_reuse)
+        print("== position_reuse（需 openpyxl）==")
+        check("import position_reuse", smoke_position_reuse)
     else:
-        print("== n_reuse_plan（openpyxl）== 加 --full 启用")
+        print("== position_reuse（openpyxl）== 加 --full 启用")
 
     print()
     if FAIL:

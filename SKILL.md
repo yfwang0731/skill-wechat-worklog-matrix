@@ -56,7 +56,7 @@ python pipeline.py probe [--workbook <用户给的xlsx>] [--since <日期>] [--k
 python pipeline.py run                    # 解密 → 导出 → 分包
 python scripts/build_matrix_rows.py preview --src <_out> --out merged_preview.csv
 python scripts/build_matrix_rows.py final --preview merged_preview.csv --remove "..." --merge "a:b"
-python scripts/n_reuse_plan.py --workbook <xlsx> --out payload_n.json
+python scripts/position_reuse.py --workbook <xlsx> --out payload_n.json
 ```
 再用 tencent-local-office-edit 回填 payload。
 
@@ -89,7 +89,7 @@ python scripts/n_reuse_plan.py --workbook <xlsx> --out payload_n.json
 - `export_conversations.py` — 按 config 导出指定会话转录
 - `split_for_agents.py` — 转录按**文件大小均衡**分成 N 份，输出 agent_N.txt 清单
 - `build_matrix_rows.py` — preview（去重标记+裁决）/ final（按列映射生成 payload）
-- `n_reuse_plan.py` — 岗位列向上复用（依赖 openpyxl）
+- `position_reuse.py` — 岗位列向上复用（依赖 openpyxl）
 - `common.py` — 配置加载、路径自动识别、日期/列工具
 - `pipeline.py` — `probe`（探测确认）/ `run`（执行）
 

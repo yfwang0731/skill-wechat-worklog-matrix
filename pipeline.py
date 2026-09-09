@@ -158,7 +158,7 @@ def cmd_run(args):
     print("③ 用户确认后生成最终行 + 回填 payload：")
     print(f"   python scripts/build_matrix_rows.py final --preview {outdir}/merged_preview.csv "
           f'--remove "<删行序号>" --merge "<a:b>,..."')
-    print("④ 岗位列复用：python scripts/n_reuse_plan.py --workbook <xlsx> --out payload_n.json")
+    print("④ 岗位列复用：python scripts/position_reuse.py --workbook <xlsx> --out payload_n.json")
     print("⑤ 用 tencent-local-office-edit 把 payload.json / payload_n.json 回填到目标子表，")
     print("   日期列设 number_format yyyy-mm-dd，保存后确认扩展名=.xlsx。")
     print("=============================================")
