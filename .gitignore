@@ -1,0 +1,15 @@
+# 备份目录（darwin 审查/修复时的回滚快照，不入库）
+.bak-*/
+
+# Python 缓存
+__pycache__/
+*.pyc
+
+# 本地运行时产物（探测/解密/导出中间物，含账号目录与聊天明文，严禁入库）
+wechat_pilot/
+*.db
+all_keys*.json
+keys_*.json
+
+# 本地个人配置（含账号目录/路径等占位符，由 config.example.json 复制而来，不入库）
+config.json

@@ -1,0 +1,84 @@
+{
+  "_comment1": "复制为 config.json 后按实际填写。所有 <> 包裹的值都是占位符，首次使用需替换。probe.py 可自动探测 accounts / sessions / column_mapping 三项。",
+  "_comment2": "column_mapping 以下示例仅示意「逻辑列 -> 列字母」写法，不代表你的模板就是 A~Y；请用 `python probe.py workbook --workbook <你的xlsx>` 生成实际列映射后整体替换。date_columns 同理。",
+  "_comment3": "post_words：从「提出人」文本剥离岗位后缀的词表（可选，缺省用 build_matrix_rows.DEFAULT_POST_WORDS）。people.counterparty_keyword 用于筛联系人；norm_o 仅在其作为整词前缀+分隔符时剥离，不会剥掉姓名本身。",
+
+  "account": {
+    "dir": "<微信账号目录名>",
+    "db_storage": "<微信 db_storage 绝对路径>",
+    "decrypted": "<解密库输出目录>"
+  },
+
+  "excel": {
+    "workbook": "<需求跟踪矩阵 xlsx 绝对路径>",
+    "sheet_match": "运维",
+    "header_row": 1,
+    "column_mapping": {
+      "项目编号": "A",
+      "项目名称": "B",
+      "项目负责人": "C",
+      "是否收费": "G",
+      "需求类型": "H",
+      "子系统名称": "I",
+      "需求描述": "L",
+      "提出时间": "M",
+      "提出人岗位": "N",
+      "提出人": "O",
+      "产生阶段": "P",
+      "需求归类": "Q",
+      "影响级别": "R",
+      "优先级": "S",
+      "状态": "T",
+      "责任人": "U",
+      "计划时间": "V",
+      "完成时间": "W",
+      "解决人": "X",
+      "备注": "Y"
+    },
+    "date_columns": ["M", "V", "W"],
+    "start_row": null
+  },
+
+  "people": {
+    "handler": "<处理人姓名：写入解决人/责任人列>",
+    "my_identifiers": ["<我方微信号>", "<我方微信昵称>"],
+    "counterparty_keyword": "<对方筛选关键字，用于筛联系人>"
+  },
+
+  "scope": {
+    "since": "2026-05-14",
+    "until": null,
+    "name_filter": "<对方筛选关键字>",
+    "sessions": [],
+    "groups": []
+  },
+
+  "rules": {
+    "ignore_if_rejected": true,
+    "ignore_if_no_reply": true,
+    "data_change_default_done": true,
+    "merge_cross_session": true,
+    "reuse_position_column": true,
+    "similarity_threshold": 0.65,
+    "near_days": 10
+  },
+
+  "defaults": {
+    "项目编号": "<项目编号>",
+    "项目名称": "<项目名称>",
+    "是否收费": "否",
+    "需求类型": "E",
+    "子系统名称": "业务系统",
+    "产生阶段": "运维阶段",
+    "状态": "完成"
+  },
+
+  "output": {
+    "dir": "./wechat_pilot",
+    "agents": 6
+  },
+
+  "post_words": ["商务经理", "商务", "客服", "接单客服", "财务", "调度", "前程操作",
+                 "后程操作", "后程", "业务员", "保险", "车队", "集港", "散货客服",
+                 "操作经理", "操作"]
+}
