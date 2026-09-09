@@ -12,6 +12,7 @@
 
   "excel": {
     "workbook": "<需求跟踪矩阵 xlsx 绝对路径>",
+    "business_system_description": "<业务系统描述：一句话说明这些业务系统是什么，可选，渲染进提示词 {{业务系统描述}}>",
     "sheet_match": "运维",
     "header_row": 1,
     "column_mapping": {
@@ -43,7 +44,8 @@
   "people": {
     "handler": "<处理人姓名：写入解决人/责任人列>",
     "my_identifiers": ["<我方微信号>", "<我方微信昵称>"],
-    "counterparty_keyword": "<对方筛选关键字，用于筛联系人>"
+    "counterparty_keyword": "<对方筛选关键字，用于筛联系人（渲染进提示词 {{对方关键字}}）>",
+    "service_object": "<服务对象：对方单位/客户名称，可选，渲染进提示词 {{服务对象}}>"
   },
 
   "scope": {

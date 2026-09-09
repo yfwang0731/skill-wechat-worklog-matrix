@@ -1,7 +1,8 @@
 # 需求识别子代理提示词模板（发给并行 agent，每 agent 一份 + 各自的文件清单）
 
 > 使用说明：把 {{...}} 占位符替换为 config.json 中对应值后再发给子代理。
-> 必填：{{处理人}}(←people.handler) {{我方标识}}(←people.my_identifiers) {{服务对象}} {{业务系统描述}}
+> 必填：{{处理人}}(←people.handler) {{我方标识}}(←people.my_identifiers) {{服务对象}}(←people.service_object) {{业务系统描述}}(←excel.business_system_description) {{对方关键字}}(←people.counterparty_keyword)
+> 可选：service_object / business_system_description 在 config 缺失时，由执行代理据用户描述补充后再发。
 > 规则开关：下发前按 config.json rules.* 把【判断规则】默认句替换为文末【开关渲染表】对应句（默认全开=保持现文）。
 
 你在帮系统运维工程师【{{处理人}}】把微信聊天记录整理成"需求跟踪矩阵"。

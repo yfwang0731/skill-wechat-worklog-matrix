@@ -61,7 +61,7 @@ python scripts/position_reuse.py --workbook <xlsx> --out payload_n.json   # rule
 ```
 再用 tencent-local-office-edit 回填 payload。
 
-**派发判定子代理前**：按 config.json 的 `rules.*` 与 `people.my_identifiers` 渲染 `references/agent-prompt-zh.txt` 后使用（模板内置【开关渲染表】：ignore_if_rejected / ignore_if_no_reply / data_change_default_done 开=现文，关=替换为表中替代句），**不要发未注入的裸模板**。
+**派发判定子代理前**：按 config.json 渲染 `references/agent-prompt-zh.txt` 的全部占位符后使用——`{{处理人}}`←people.handler、`{{我方标识}}`←people.my_identifiers、`{{服务对象}}`←people.service_object、`{{业务系统描述}}`←excel.business_system_description、`{{对方关键字}}`←people.counterparty_keyword；判定开关 `rules.*`（ignore_if_rejected / ignore_if_no_reply / data_change_default_done）按模板【开关渲染表】注入（开=现文，关=替换为表中替代句）。**不要发未注入的裸模板**。
 `position_reuse.py` 默认只填空缺、不覆盖；加 `--override` 才把空缺写为上方最近岗位。`rules.reuse_position_column=false` 时跳过（脚本读取 config 自检退出）。
 （`<output.dir>/transcripts/_out` 即 run 产物目录；`output.dir` 见 config，默认 `./wechat_pilot`）
 
@@ -86,6 +86,7 @@ python scripts/position_reuse.py --workbook <xlsx> --out payload_n.json   # rule
 | 默认值 | `defaults.*` | 项目编号/名称/是否收费/需求类型/子系统/产生阶段/状态 等固定列填充 |
 | 输出 | `output.dir` / `agents` | 产物目录、并行子代理路数 |
 | 词表 | `post_words` | 岗位词表（从"提出人"文本剥离岗位用） |
+| 提示词上下文 | `people.service_object` / `excel.business_system_description` | 渲染进判定提示词的 `{{服务对象}}` / `{{业务系统描述}}`（可选，缺失时由执行代理据用户描述补充） |
 
 ## 判定规则（对方提出 → 我方答复）
 > 生效方式：merge_cross_session / similarity_threshold / near_days 由 build_matrix_rows 代码读取；ignore_if_rejected / ignore_if_no_reply / data_change_default_done 是"判定提示词开关"，由执行代理在派发子代理时按 references/agent-prompt-zh.txt 的【开关渲染表】注入生效（不入 pipeline 脚本）；reuse_position_column=false 时跳过岗位复用命令（position_reuse 读取 config 自检退出）。把"忽略"类开关设为 false 会把被拒/无回复的需求也登记为待人工裁决行。
