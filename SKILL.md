@@ -4,7 +4,7 @@ description: >-
   通用「微信聊天记录 → 需求跟踪矩阵 Excel」流水线。扫描本机微信账户、由用户选择账户/会话/时间范围/Excel/处理人，
   解密导出聊天，LLM 识别对方提出的系统需求并判定答复结果，合并跨会话重复，按**表头**映射到 Excel 追加行。
   适用于任何"客户通过微信提需求、运维方需登记成台账/矩阵"的场景，不绑定具体客户或项目。
-  触发场景：更新需求跟踪矩阵 / 从微信聊天记录整理需求台账 / 把微信里的需求登记进 Excel / 解密微信数据库。
+  触发场景：更新需求跟踪矩阵 / 从微信聊天记录整理需求台账 / 把微信里的需求登记进 Excel。
 agent_created: true
 ---
 
@@ -57,24 +57,38 @@ python pipeline.py probe [--workbook <用户给的xlsx>] [--since <日期>] [--k
 python pipeline.py run                    # 解密 → 导出 → 分包（产物在 output.dir/transcripts/_out）
 python scripts/build_matrix_rows.py preview --src <output.dir>/transcripts/_out --out merged_preview.csv
 python scripts/build_matrix_rows.py final --preview merged_preview.csv --remove "..." --merge "a:b"
-python scripts/position_reuse.py --workbook <xlsx> --out payload_n.json
+python scripts/position_reuse.py --workbook <xlsx> --out payload_n.json   # rules.reuse_position_column=false 时跳过
 ```
 再用 tencent-local-office-edit 回填 payload。
+
+**派发判定子代理前**：按 config.json 的 `rules.*` 与 `people.my_identifiers` 渲染 `references/agent-prompt-zh.txt` 后使用（模板内置【开关渲染表】：ignore_if_rejected / ignore_if_no_reply / data_change_default_done 开=现文，关=替换为表中替代句），**不要发未注入的裸模板**。
+`position_reuse.py` 默认只填空缺、不覆盖；加 `--override` 才把空缺写为上方最近岗位。`rules.reuse_position_column=false` 时跳过（脚本读取 config 自检退出）。
 （`<output.dir>/transcripts/_out` 即 run 产物目录；`output.dir` 见 config，默认 `./wechat_pilot`）
+
+### 可选参数速查（与 argparse 一致）
+| 命令 | 参数 |
+|---|---|
+| `pipeline.py probe` | `--workbook <xlsx>` `--since <日期>` `--keyword <串>` `--dump <json>` |
+| `probe.py`（细粒度） | `accounts --hint [--json]`；`sessions --decrypted <dir> [--since] [--keyword] [--json]`；`workbook --workbook <xlsx> [--sheet <关键字>] [--json]` |
+| `pipeline.py run` | `[--since] [--skip-decrypt] [--reextract]` |
+| `build_matrix_rows.py preview` | `--src <_out目录> --out <csv> [--config]` |
+| `build_matrix_rows.py final` | `--preview <csv> [--remove "1,3"] [--merge "a:b"] [--out-dir] [--workbook] [--start-row-excel] [--config]` |
+| `position_reuse.py` | `--workbook <xlsx> --out <json> [--override] [--start-row] [--end-row] [--config]` |
 
 ## 可配置项（都可变量化，见 config.example.json）
 | 类别 | 变量 | 说明 |
 |---|---|---|
-| 账户 | `account.dir` / `db_storage` / `decrypted` | 多账号由用户选 |
+| 账户 | `account.db_storage` / `decrypted`；`dir`(可选，仅人眼识别) | 多账号由用户选 |
 | Excel | `workbook` / `sheet_match` / `header_row` / `column_mapping` / `date_columns` / `start_row` | 列映射由 probe 依表头生成 |
-| 人员 | `people.handler` / `my_identifiers` / `counterparty_keyword` | 处理人、我方标识、对方筛选关键字 |
+| 人员 | `people.handler` / `my_identifiers` / `counterparty_keyword` | 处理人、我方标识(→渲染进 {{我方标识}})、对方筛选关键字 |
 | 范围 | `scope.since` / `until` / `sessions` / `name_filter` / `groups` | 时间窗与会话清单 |
-| 规则 | `rules.*` | 拒绝忽略、无回复忽略、数据修改默认完成、跨会话合并、岗位复用、去重阈值(similarity_threshold/near_days) |
+| 规则 | `rules.*` | ignore_if_rejected / ignore_if_no_reply / data_change_default_done → 派发判定子代理时注入提示词(见 agent-prompt-zh【开关渲染表】)；merge_cross_session / similarity_threshold / near_days → build_matrix_rows 代码读取；reuse_position_column → 是否执行 position_reuse |
 | 默认值 | `defaults.*` | 项目编号/名称/是否收费/需求类型/子系统/产生阶段/状态 等固定列填充 |
 | 输出 | `output.dir` / `agents` | 产物目录、并行子代理路数 |
 | 词表 | `post_words` | 岗位词表（从"提出人"文本剥离岗位用） |
 
 ## 判定规则（对方提出 → 我方答复）
+> 生效方式：merge_cross_session / similarity_threshold / near_days 由 build_matrix_rows 代码读取；ignore_if_rejected / ignore_if_no_reply / data_change_default_done 是"判定提示词开关"，由执行代理在派发子代理时按 references/agent-prompt-zh.txt 的【开关渲染表】注入生效（不入 pipeline 脚本）；reuse_position_column=false 时跳过岗位复用命令（position_reuse 读取 config 自检退出）。把"忽略"类开关设为 false 会把被拒/无回复的需求也登记为待人工裁决行。
 - 只记**对方提出的、针对系统的需求**；寒暄/通知/闲聊不算。
 - 我方明确拒绝（不能做/做不了/不支持/你们自己改…）→ 忽略（`rules.ignore_if_rejected`）。
 - 提出后无实质回复 → 忽略（`rules.ignore_if_no_reply`）。

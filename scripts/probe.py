@@ -195,7 +195,13 @@ def cmd_workbook(args):
                  "若是旧版 .xls，请先另存为 .xlsx 再探测。")
     names = wb.sheetnames
     if args.sheet:
-        ws = wb[args.sheet] if args.sheet in names else wb[[n for n in names if args.sheet in n][0]]
+        if args.sheet in names:
+            ws = wb[args.sheet]
+        else:
+            cand = [n for n in names if args.sheet in n]
+            if not cand:
+                sys.exit(f"✗ 未找到包含「{args.sheet}」的工作表。可用的表：{', '.join(names)}")
+            ws = wb[cand[0]]
     else:
         # 优先选数据最多的表（排除"首页"/"说明"之类）
         best, best_n = None, -1

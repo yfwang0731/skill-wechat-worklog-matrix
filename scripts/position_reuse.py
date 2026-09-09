@@ -30,6 +30,11 @@ def main():
 
     cfg, _ = load_config(args.config)
     cfg = cfg or {}
+    if (cfg.get("rules", {}) or {}).get("reuse_position_column") is False:
+        print("[skip] config.rules.reuse_position_column=false，岗位列复用已跳过。")
+        with open(args.out, "w", encoding="utf-8") as f:
+            json.dump({"values": []}, f, ensure_ascii=False)
+        sys.exit(0)
     excel_cfg = cfg.get("excel", {}) or {}
     mapping = excel_cfg.get("column_mapping") or {}
     sheet_hint = excel_cfg.get("sheet_match") or "运维"
