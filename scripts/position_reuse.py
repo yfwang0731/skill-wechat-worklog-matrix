@@ -7,7 +7,7 @@
 
 依赖：openpyxl
 用法：
-  python n_reuse_plan.py --workbook <xlsx> --out payload_n.json [--override]
+  python position_reuse.py --workbook <xlsx> --out payload_n.json [--override]
 """
 import json
 import sys

@@ -35,7 +35,7 @@ python pipeline.py run
 # 5) 预览 → 人工裁决删行/合并 → 生成回填 payload
 python scripts/build_matrix_rows.py preview --src <_out> --out merged_preview.csv
 python scripts/build_matrix_rows.py final --preview merged_preview.csv --remove "..." --merge "a:b"
-python scripts/n_reuse_plan.py --workbook <xlsx> --out payload_n.json
+python scripts/position_reuse.py --workbook <xlsx> --out payload_n.json
 ```
 
 解密工具 wcdb-key-tool（第三方，不在本仓库内）：
@@ -58,7 +58,7 @@ wechat-worklog-matrix/
 │   ├── export_conversations.py #   按 config 导出指定会话转录
 │   ├── split_for_agents.py     #   转录按文件大小均衡分 N 份给子代理
 │   ├── build_matrix_rows.py    #   preview（去重标记+裁决）/ final（生成回填 payload）
-│   ├── n_reuse_plan.py         #   岗位列向上复用计划
+│   ├── position_reuse.py       #   岗位列向上复用计划（原 n_reuse_plan.py）
 │   ├── common.py               #   配置加载 / 路径识别 / 日期与列工具
 │   └── smoke_test.py           #   自检：import + 纯函数断言
 └── references/
@@ -74,6 +74,12 @@ wechat-worklog-matrix/
 python scripts/smoke_test.py        # import 全模块 + 纯函数断言
 python scripts/smoke_test.py --full # 额外校验依赖 openpyxl 的模块
 ```
+
+## 许可
+
+本项目采用 MIT 许可，详见 [LICENSE](LICENSE)。
+
+> 注意：本 skill 依赖的解密工具 wcdb-key-tool 为第三方项目，不在本仓库内，其授权与合规性请自行评估。
 
 ## 合规与隐私说明
 
