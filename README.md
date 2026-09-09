@@ -19,23 +19,23 @@
 
 ```bash
 # 0) 环境依赖
-pip install openpyxl            # probe workbook / build final / n_reuse 依赖
+pip install openpyxl            # probe workbook / build final / position_reuse 依赖
+#    Excel 须为 .xlsx（.xlsm 也支持）；旧版 .xls/.xlt 会被 probe 拒绝，请先另存为 .xlsx
 
 # 1) 探测（账户 / 会话 / Excel 表头映射，一次跑完供一次性确认）
 python pipeline.py probe --workbook <你的需求矩阵.xlsx> --dump probe.json
 
-# 2) 确认探测结果，复制 config.example.json 为 config.json 并填写
-#    （account / excel / people / scope / defaults）
+# 2) 一次性确认（把探测结果一起呈现给用户确认：账户 / Excel / 会话 / 时间范围 / 处理人）
 
-# 3) 执行（解密 → 导出会话转录 → 分包给子代理）
+# 3) 写 config.json（复制 config.example.json 填写 account / excel / people / scope / defaults）
+
+# 4) 执行：解密 → 导出会话转录 → 分包 → 派发子代理 LLM 识别 → 预览裁决 → 生成 payload → 回填
 python pipeline.py run
-
-# 4) LLM 识别（用 references/agent-prompt-zh.txt 模板 + 各 agent_N.txt 分派给并行子代理）
-
-# 5) 预览 → 人工裁决删行/合并 → 生成回填 payload
-python scripts/build_matrix_rows.py preview --src <_out> --out merged_preview.csv
+python scripts/build_matrix_rows.py preview --src <output.dir>/transcripts/_out --out merged_preview.csv
 python scripts/build_matrix_rows.py final --preview merged_preview.csv --remove "..." --merge "a:b"
 python scripts/position_reuse.py --workbook <xlsx> --out payload_n.json
+#    （<output.dir>/transcripts/_out 即 run 产物目录，output.dir 默认 ./wechat_pilot）
+#    用 tencent-local-office-edit 把 payload*.json 回填到目标子表
 ```
 
 解密工具 wcdb-key-tool（第三方，不在本仓库内）：

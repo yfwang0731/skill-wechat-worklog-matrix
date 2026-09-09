@@ -4,7 +4,7 @@ description: >-
   通用「微信聊天记录 → 需求跟踪矩阵 Excel」流水线。扫描本机微信账户、由用户选择账户/会话/时间范围/Excel/处理人，
   解密导出聊天，LLM 识别对方提出的系统需求并判定答复结果，合并跨会话重复，按**表头**映射到 Excel 追加行。
   适用于任何"客户通过微信提需求、运维方需登记成台账/矩阵"的场景，不绑定具体客户或项目。
-  触发场景：更新需求跟踪矩阵 / 从微信聊天记录整理需求 / 导出微信聊天记录 / 解密微信数据库。
+  触发场景：更新需求跟踪矩阵 / 从微信聊天记录整理需求台账 / 把微信里的需求登记进 Excel / 解密微信数据库。
 agent_created: true
 ---
 
@@ -13,10 +13,11 @@ agent_created: true
 把微信 PC 聊天记录整理成需求跟踪矩阵台账。服务对象、项目、人员**全部由用户配置**，skill 本身不内置任何具体客户/项目/姓名。
 
 ## 何时使用
-用户要"根据微信聊天记录更新/补充需求跟踪矩阵"、要读微信 4.x 本地记录、或要导出某批联系人聊天记录。
+用户要"根据微信聊天记录更新/补充需求跟踪矩阵"、要读微信 4.x 本地记录、或要把微信里的需求登记进 Excel 台账。
 
 ## 环境依赖（首次使用前）
-- Python 3.9+，需 `pip install openpyxl`（probe workbook / build final / n_reuse 均依赖）。
+- Python 3.9+，需 `pip install openpyxl`（probe workbook / build final / position_reuse 均依赖）。
+- Excel 须为 `.xlsx`（`.xlsm` 也支持）；旧版 `.xls`/`.xlt` 会被 `probe` 直接拒绝，请先用 Excel/WPS「另存为 .xlsx」再运行。
 - 解密用第三方 wcdb-key-tool（见"关键事实"第 2 条），skill 内不含。
 - 修改 scripts 后跑一次自检：`python scripts/smoke_test.py`（纯 import + 纯函数断言，不碰真实数据；加 `--full` 会额外校验 openpyxl 依赖项）。
 
@@ -31,7 +32,7 @@ agent_created: true
 
 ### 第 1 步：探测（agent 自动执行，一次跑完）
 ```
-python pipeline.py probe [--workbook <用户给的xlsx>] [--since <日期>] [--keyword <可选筛选>]
+python pipeline.py probe [--workbook <用户给的xlsx>] [--since <日期>] [--keyword <可选筛选>] [--dump <探测结果json>]
 ```
 一次探测出三件事并汇总打印：
 - **①本机微信账户列表**（可能有多个账号，让用户选）
@@ -53,12 +54,13 @@ python pipeline.py probe [--workbook <用户给的xlsx>] [--since <日期>] [--k
 
 ### 第 4 步：执行
 ```
-python pipeline.py run                    # 解密 → 导出 → 分包
-python scripts/build_matrix_rows.py preview --src <_out> --out merged_preview.csv
+python pipeline.py run                    # 解密 → 导出 → 分包（产物在 output.dir/transcripts/_out）
+python scripts/build_matrix_rows.py preview --src <output.dir>/transcripts/_out --out merged_preview.csv
 python scripts/build_matrix_rows.py final --preview merged_preview.csv --remove "..." --merge "a:b"
 python scripts/position_reuse.py --workbook <xlsx> --out payload_n.json
 ```
 再用 tencent-local-office-edit 回填 payload。
+（`<output.dir>/transcripts/_out` 即 run 产物目录；`output.dir` 见 config，默认 `./wechat_pilot`）
 
 ## 可配置项（都可变量化，见 config.example.json）
 | 类别 | 变量 | 说明 |
