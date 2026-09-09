@@ -183,7 +183,16 @@ def cmd_sessions(args):
 # ---------------- workbook ----------------
 def cmd_workbook(args):
     import openpyxl
-    wb = openpyxl.load_workbook(args.workbook)
+    from openpyxl.utils.exceptions import InvalidFileException
+    # 旧版 .xls/.xlt 二进制格式 openpyxl 不支持（.xlsx/.xlsm/.xltx 可以）
+    if args.workbook.lower().endswith((".xls", ".xlt")):
+        sys.exit(f"✗ {args.workbook} 是旧版格式，openpyxl 不支持。"
+                 "请先用 Excel/WPS 把工作簿「另存为 .xlsx」再探测。")
+    try:
+        wb = openpyxl.load_workbook(args.workbook)
+    except InvalidFileException as e:
+        sys.exit(f"✗ 无法以 .xlsx 解析 {args.workbook}（{e}）。"
+                 "若是旧版 .xls，请先另存为 .xlsx 再探测。")
     names = wb.sheetnames
     if args.sheet:
         ws = wb[args.sheet] if args.sheet in names else wb[[n for n in names if args.sheet in n][0]]

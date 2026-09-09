@@ -44,8 +44,9 @@ def main():
     print(f"[columns] 提出人=第{col_person}列  岗位=第{col_post}列（来源："
           f"{'表头映射' if mapping.get('提出人') else '默认位置'}）")
 
-    if args.workbook.lower().endswith((".xls", ".xlsm", ".xlt")):
-        sys.exit("✗ openpyxl 只支持 .xlsx/.xlsm。请先用 Excel/WPS 把工作簿「另存为 .xlsx」再运行。")
+    # 旧版 .xls/.xlt 二进制格式 openpyxl 不支持（.xlsx/.xlsm/.xltx 可以）
+    if args.workbook.lower().endswith((".xls", ".xlt")):
+        sys.exit("✗ openpyxl 不支持旧版 .xls/.xlt 格式。请先用 Excel/WPS 把工作簿「另存为 .xlsx」再运行。")
     try:
         wb = openpyxl.load_workbook(args.workbook)
     except InvalidFileException:
