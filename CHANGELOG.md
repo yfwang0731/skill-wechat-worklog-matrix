@@ -191,6 +191,14 @@
   不再用加粗文本冒充标题。
 - **`README.md` 瘦身 24%**：删掉与 `SKILL.md` 逐条重复的坑位大表，以及逐字重复的通道对照表。
 - `references/workflow-notes.md` 承接「为什么这样 + 完整推演」，与 `SKILL.md` 形成**摘要 / 详情**两层。
+- **`README.md` 新增「安装」节**：原先只有环境依赖与运行命令，**没说文件该放到哪里** ——
+  别人 clone 之后不知道要放进技能目录。补齐安装位置（`~/.workbuddy/skills/` 或项目内
+  `.workbuddy/skills/`）、目录命名要求与升级方式，并说明本项目**不需要 Release**、
+  clone 或 Download ZIP 即可。
+- **新增本文件** `CHANGELOG.md`：按日期记录从缘起到当前的全部开发过程（含 git 之前的创建史）、
+  独立的评测记录，以及「设计上的不变量」。同批做了一次全仓库脱敏扫描，
+  修掉 3 处**历史遗留**的真实内容泄漏：`workflow-notes.md` 举 `option_col[].texts` 例子时写了
+  真实提出人姓名；`smoke_test.py` 直接拿真实客户消息原文当测试夹具；`SKILL.md` 引用客户原话举例。
 
 ---
 
