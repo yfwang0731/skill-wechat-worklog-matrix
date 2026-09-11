@@ -64,8 +64,11 @@ agent_created: true
 7. **`decrypt.py` 必须显式传 `--db-dir`**：一台机器可能有多个微信账户，工具自动探测可能取到停用的那个。
 8. **群可能长期没消息**：真机上一个用户点名要看的群，最后一次发言在两周前。**先查活跃度再决定时间窗**，
    别默认"用户点名=近期有聊"；发现 0 条要如实报告并让用户决定是否扩窗。
-9. **岗位复用默认只动新增行**：历史行只作岗位来源。早期版本默认从第 2 行扫整表，
-   会回填历史里的空缺格（静默越界改写）。现在起始行缺省自动取追加起始行，推不出来就报错。
+9. **岗位复用"哪些行算本批新行"必须显式说明**：历史行只作来源（只读）。
+   早期版本默认从第 2 行扫整表 → 回填历史空缺格（静默越界改写）；
+   改成"自动取追加起始行"后又走进另一个坑：**永远 0 条**——追加起始行 = 末数据行 + 1，
+   从那里向下扫恒为空，而表格尾部若还有空的"带格式行"，连提示都不会打印（**静默无操作**）。
+   现在：默认模式**直接报错退出**，必须给 `--new-rows <final_rows.csv>` 或 `--start-row <本批首行号>`。
 10. **云文档通道拿不到"便宜的历史岗位"**：实测四条路都不行 —— `download_file` 给的 URL 需登录态
     （直接 curl 得 `403 userNotLogin`，所以云文档**退化不成**"下载到本地走本地通道"）；
     `get_typed_value` **会跳过空单元格**（8 格只回 7 值），行列对不上；
@@ -126,6 +129,12 @@ python scripts/to_kdocs_payload.py --payload payload_n.json --out kdocs_update_n
 写完后**必须用 `sheet.get_range_data` 回读同一区域核对**，不能只信 `code: 0`。
 
 ### 云文档通道专属坑
+- **纯文本可能被表格引擎改写**：所有值都以 `opType:"formula"` 写入，所以以 `= + - @` 开头、
+  或带前导零 / 16 位以上纯数字的文本，可能被当作公式或数值（丢零、丢精度）。
+  `to_kdocs_payload.py` 会**显式告警**列出这类值（命中数 + 前 10 条 + 原因），**但不改写值** ——
+  写入前先与用户确认；必须原样保留时，先在 WPS 里把目标列设为「文本」格式再写。
+  （刻意不做自动转义：`'` 前缀之类语义依赖具体表格引擎，未真机确认前加上去反而会把
+  "可能被改写"变成"一定被改写"。）
 - **限频** `429001`/`429002`（熔断）：不要逐格写、不要密集重试；命中限频要等响应里给的恢复时间。
 - **`.ksheet` 智能表格**：字段有类型（日期/单选等），写入形态与 `.xlsx` 不同，先确认文档类型。
 - **区域保护**：文档若设了区域权限（`sheet.list_protection_ranges`），写入会失败，先让用户解除。
@@ -202,10 +211,12 @@ python scripts/build_matrix_rows.py final --preview merged_preview.csv --start-r
 > （岗位信息根本不在数据里）—— 直接在 `merged_preview.csv` 的「提出人岗位」列**裁决时补一个值**即可，
 > 成本为零且不依赖历史。不要把"补满岗位"当成必须达成的目标。
 
-**独立补跑**：`position_reuse.py` 保留用于事后补漏或自定义区间，与 `final` **共用同一实现**（`common.reuse_position_fill`）：
-- 默认从**表格当前内容**取新行（此时新行须已落表，否则 0 条 + `[warn]`）。
-- 加 `--new-rows <final_rows.csv>` 从 CSV 取新行（Excel 行号 = 起始行 + 序号），**不要求新行已落表**。
-- `--start-row` 缺省自动取追加起始行；历史行永远只读。
+**独立补跑**：`position_reuse.py` 保留用于事后补漏或自定义区间，与 `final` **共用同一实现**（`common.reuse_position_fill`）。
+**必须显式说明"哪些行算本批新行"，否则直接报错退出**（默认模式无从判断，见坑 9）：
+- `--new-rows <final_rows.csv>`（推荐）：从 `final` 产物取新行，Excel 行号 = 起始行 + 序号，**不要求新行已落表**；行号由 `--workbook/--snapshot` 推算，或显式 `--start-row`。
+- `--start-row <本批首行号>`：显式指定扫描起点（**会扫该行之后的全部行，含历史**）。
+- 两者都不给 → **报错退出**，不再静默返回 0 条。
+- 历史行永远只读。
 
 ## 判定规则（对方提出 → 我方答复）
 > 生效方式：merge_cross_session / similarity_threshold / near_days 由 build_matrix_rows 代码读取；
@@ -245,7 +256,7 @@ python scripts/build_matrix_rows.py final --preview merged_preview.csv --start-r
 | `probe.py` | `accounts --hint [--json]`；`sessions --decrypted <dir> [--since] [--keyword] [--json]`；`workbook (--workbook <xlsx> \| --snapshot <json>) [--sheet <关键字>] [--json]` |
 | `sheet_snapshot.py` | `plan --file-id <id> --worksheet-id <n> [--rows] [--cols] [--letters "L,M,O"]`；`build --raw <f>… --out <json> [--sheet <名>] [--worksheet-id] [--file-id] [--drive-id] [--name]`；`inspect --snapshot <json>` |
 | `build_matrix_rows.py` | `preview --src <_out> --out <csv> [--config]`；`final --preview <csv> [--remove "1,3"] [--merge "a:b"] [--out-dir] (--workbook <xlsx> \| --snapshot <json> \| --start-row-excel N) [--reuse-position \| --no-reuse-position] [--history <json>] [--config]` |
-| `position_reuse.py` | `(--workbook <xlsx> \| --snapshot <json> \| --history <json>) --out <json> [--new-rows <final_rows.csv>] [--override] [--start-row N] [--end-row N] [--config]` |
+| `position_reuse.py` | `(--workbook <xlsx> \| --snapshot <json> \| --history <json>) --out <json> (--new-rows <final_rows.csv> \| --start-row N) [--override] [--end-row N] [--config]` —— **必须给 `--new-rows` 或 `--start-row`，两者都不给直接报错** |
 | `to_kdocs_payload.py` | `--payload <json> [--out <json>] [--file-id] [--worksheet-id] [--date-cols "M,V,W"] [--date-numfmt yyyy-mm-dd] [--no-date-format] [--batch-size 100] [--config]` |
 
 ## 可配置项（见 `config.example.json`）
