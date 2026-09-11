@@ -55,7 +55,7 @@ def main():
         from common import load_snapshot, workbook_from_snapshot, pick_sheet
         wb = workbook_from_snapshot(load_snapshot(args.snapshot))
         sheet = pick_sheet(wb, sheet_hint)
-        print(f"[source] WPS 快照 {args.snapshot}（sheetId={getattr(sheet, 'sheet_id', None)}）")
+        print(f"[source] WPS 快照 {args.snapshot}（worksheet_id={getattr(sheet, 'sheet_id', None)}）")
     else:
         import openpyxl
         from openpyxl.utils.exceptions import InvalidFileException

@@ -12,10 +12,10 @@
                 用于算「末数据行 / 追加起始行」与岗位复用
 
 用法：
-  python sheet_snapshot.py plan --file-id <id> --sheet-id <n> [--rows N] [--cols N] [--letters C,N,O]
+  python sheet_snapshot.py plan --file-id <id> --worksheet-id <n> [--rows N] [--cols N] [--letters C,N,O]
   python sheet_snapshot.py build --raw raw_hdr.json [--raw raw_cols.json ...]
                                 --out sheet_snapshot.json [--sheet "运维-2026"]
-                                [--sheet-id N] [--file-id X] [--drive-id Y] [--name 文档名]
+                                [--worksheet-id N] [--file-id X] [--drive-id Y] [--name 文档名]
   python sheet_snapshot.py inspect --snapshot sheet_snapshot.json
 
 快照结构（后续脚本只认 rows 这个密集二维数组）：
@@ -24,11 +24,12 @@
   "doc": {"file_id": "...", "drive_id": "...", "name": "..."},
   "fetched_at": "2026-09-11T10:00:00+08:00",
   "sheets": [
-    {"name": "运维-2026", "sheetId": 3,
-     "num_formats": {"3,12": "yyyy-mm-dd"},
+    {"name": "运维-2026", "worksheet_id": 3,
+     "num_formats": {"3,12": "yyyy/m/d"},
      "rows": [["项目编号", "项目名称", ...], ...]}
   ]
 }
+> 接口要点：kdocs 连接器的工作表参数名是 **worksheet_id**（不是 sheetId），读写都用它。
 raw.json 可为以下任一形态（本脚本自动识别）：
   {"result":"ok","detail":{"rangeData":[...]}} / {"rangeData":[...]} / [...] / MCP content 包装
 """
@@ -91,17 +92,18 @@ def load_raw(path):
 
 
 def pick_meta(obj):
-    """从 raw 里顺带捞文档元信息（file_id / drive_id / sheetId），没有就返回 {}。"""
+    """从 raw 里顺带捞文档元信息（file_id / drive_id / worksheet_id），没有就返回 {}。"""
+    KEYS = ("file_id", "drive_id", "worksheet_id", "sheetId", "sheet_id", "name")
     if not isinstance(obj, dict):
         return {}
     out = {}
-    for k in ("file_id", "drive_id", "sheetId", "sheet_id", "name"):
+    for k in KEYS:
         if obj.get(k) not in (None, ""):
             out[k] = obj[k]
     for wrap in ("detail", "data"):
         inner = obj.get(wrap)
         if isinstance(inner, dict):
-            for k in ("file_id", "drive_id", "sheetId", "sheet_id", "name"):
+            for k in KEYS:
                 if inner.get(k) not in (None, "") and k not in out:
                     out[k] = inner[k]
     return out
@@ -135,9 +137,12 @@ def cmd_build(args):
     sheets_out = list(passthrough)
     if store.get("cells"):
         rows = store_to_rows(store)
+        ws_id = args.worksheet_id
+        if ws_id is None:
+            ws_id = meta.get("worksheet_id", meta.get("sheetId", meta.get("sheet_id")))
         sheets_out.append({
             "name": args.sheet or args.name or "sheet1",
-            "sheetId": args.sheet_id if args.sheet_id is not None else meta.get("sheetId"),
+            "worksheet_id": ws_id,
             "num_formats": store.get("num_formats") or {},
             "rows": rows,
         })
@@ -179,7 +184,7 @@ def cmd_inspect(args):
     print(f"  文档：{doc.get('name') or '(未记录)'}  file_id={doc.get('file_id')}")
     for name in wb.sheetnames:
         s = wb[name]
-        print(f"\n  ── 子表「{name}」 sheetId={s.sheet_id}  "
+        print(f"\n  ── 子表「{name}」 worksheet_id={s.sheet_id}  "
               f"{s.max_row} 行 × {s.max_column} 列")
         for r in range(1, min(4, s.max_row) + 1):
             vals = [v for v in s.row_values(r) if v != ""]
@@ -200,17 +205,17 @@ def cmd_inspect(args):
 
 
 def cmd_plan(args):
-    """打印建议的 kdocs 读表调用体（agent 填 file_id / sheetId 后直接调用）。"""
+    """打印建议的 kdocs 读表调用体（agent 填 file_id / worksheet_id 后直接调用）。"""
     cols = args.cols or 30
     rows = args.rows
     plan = {
         "step1_headers": {
             "why": "只读前 3 行识别表头名 → 列映射；这样第 2 趟才能只读关键列",
             "tool": "sheet.get_range_data",
-            "take": "sheetId 未定时先调 sheet.get_sheets_info 取 range.rowTo / 列数",
+            "take": "worksheet_id 未定时先调 sheet.get_sheets_info 取 range.rowTo / 列数",
             "body": {
                 "file_id": args.file_id or "<file_id>",
-                "sheetId": args.sheet_id if args.sheet_id is not None else "<sheetId>",
+                "worksheet_id": args.worksheet_id if args.worksheet_id is not None else "<worksheet_id>",
                 "range": {"rowFrom": 0, "rowTo": 2, "colFrom": 0, "colTo": cols - 1},
             },
             "save_raw_as": "raw_hdr.json",
@@ -224,7 +229,7 @@ def cmd_plan(args):
             "letters": args.letters or "<第1趟得到的列字母，如 C,N,O>",
             "body": {
                 "file_id": args.file_id or "<file_id>",
-                "sheetId": args.sheet_id if args.sheet_id is not None else "<sheetId>",
+                "worksheet_id": args.worksheet_id if args.worksheet_id is not None else "<worksheet_id>",
                 "range": {"rowFrom": 0,
                           "rowTo": (rows - 1) if rows else "<取 get_sheets_info 的 range.rowTo>",
                           "colFrom": "<最小列 0-based>", "colTo": "<最大列 0-based>"},
@@ -234,7 +239,8 @@ def cmd_plan(args):
                     "--out sheet_snapshot.json  →  再跑 probe.py workbook --snapshot",
         },
         "suggested_key_columns": KEY_COLUMNS,
-        "note": "raw 存盘务必原样（含 rangeData 的完整结构），build 会自动识别多种包装格式。",
+        "note": "raw 存盘务必原样（含 rangeData 的完整结构），build 会自动识别多种包装格式。"
+                "工作表参数名统一用 worksheet_id。",
     }
     if args.letters:
         try:
@@ -255,7 +261,7 @@ def main():
                     help="kdocs sheet.get_range_data 的返回文件（可多次 --raw 合并）")
     p1.add_argument("--out", required=True)
     p1.add_argument("--sheet", default=None, help="快照里子表的名字（也是后续 sheet_match 匹配用）")
-    p1.add_argument("--sheet-id", default=None)
+    p1.add_argument("--worksheet-id", "--sheet-id", dest="worksheet_id", default=None)
     p1.add_argument("--file-id", default=None)
     p1.add_argument("--drive-id", default=None)
     p1.add_argument("--name", default=None, help="文档名（仅记录，便于人眼核对）")
@@ -265,7 +271,7 @@ def main():
 
     p3 = sub.add_parser("plan", help="打印建议的 kdocs 读表调用体")
     p3.add_argument("--file-id", default=None)
-    p3.add_argument("--sheet-id", default=None)
+    p3.add_argument("--worksheet-id", "--sheet-id", dest="worksheet_id", default=None)
     p3.add_argument("--rows", type=int, default=None, help="表的大致总行数")
     p3.add_argument("--cols", type=int, default=None, help="表的大致总列数")
     p3.add_argument("--letters", default=None, help="第 2 趟要读的列字母，逗号分隔，如 C,N,O")

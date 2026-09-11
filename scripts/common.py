@@ -283,7 +283,8 @@ def workbook_from_snapshot(snap):
             rows, fmts = sparse_to_grid(s.get("rangeData"))
             s.setdefault("num_formats", fmts)
         sheets.append(GridSheet(s.get("name") or f"sheet{i}", rows,
-                                s.get("num_formats"), s.get("sheetId")))
+                                s.get("num_formats"),
+                                s.get("worksheet_id", s.get("sheetId"))))
     if not sheets:
         raise ValueError("快照里没有任何工作表（sheets 为空）：请先按 SKILL.md 的"
                          "「WPS 通道读表」把 kdocs 返回存成 raw.json 再 build。")

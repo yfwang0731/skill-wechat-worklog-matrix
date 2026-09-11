@@ -21,9 +21,9 @@
       "file_id": "<或直接给 file_id>",
       "drive_id": "<可选，file_id 能定位时可不填>",
       "name": "<文档名，仅记录便于人眼核对>",
-      "sheet_id": null,
-      "_sheet_id_comment": "目标子表的 sheetId（kdocs 返回的是整数）。留 null 时脚本按 sheet_match 名字选；写入前必须填或由 probe 输出补上。",
-      "date_numfmt": "yyyy-mm-dd"
+      "worksheet_id": null,
+      "_worksheet_id_comment": "目标子表的 worksheet_id（kdocs 连接器返回的整数，**参数名就是 worksheet_id**）。留 null 时脚本按 sheet_match 名字选；写入前必须填。旧键名 sheet_id 仍兼容。",
+      "date_numfmt": "yyyy/m/d"
     },
     "business_system_description": "<业务系统描述：一句话说明这些业务系统是什么，可选，渲染进提示词 {{业务系统描述}}>",
     "sheet_match": "运维",

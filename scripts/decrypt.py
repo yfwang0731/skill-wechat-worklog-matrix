@@ -56,10 +56,12 @@ def main():
     keys_json = os.path.join(workdir, f"keys_{acct_tag}.json")
 
     # 1) 提取密钥（仅在缺失或强制时）
+    #    必须显式传 --db-dir：一台机器可能有多个微信账户，只靠工具自动探测可能取错账号。
     if a.reextract or not os.path.exists(keys_json):
         print("[decrypt] 提取密钥中 —— 请确保微信已登录且处于前台（只读扫描内存，不读写聊天）…")
         try:
             subprocess.run([sys.executable, tool, "extract",
+                            "--db-dir", db,
                             "--output", keys_json], check=True)
         except subprocess.CalledProcessError as e:
             sys.exit(f"✗ extract 失败（退出码 {e.returncode}）。确认微信在前台、未被锁屏，必要时加 --reextract 重试。")
