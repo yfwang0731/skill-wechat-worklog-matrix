@@ -12,19 +12,27 @@ add_row 非幂等（重复调用会插多行），网络重试一次就多一行
   B. 简化格式
      {"values":[{"row":0,"col":11,"value":"x"}]}
 
-输出（**可直接作为 sheet.update_range_data 的 arguments**）：
-  {"file_id":"...","worksheet_id":3,"rangeData":[
-     {"opType":"formula","rowFrom":0,"rowTo":0,"colFrom":11,"colTo":11,"formula":"x"},
-     {"opType":"format","rowFrom":0,"rowTo":0,"colFrom":12,"colTo":12,"xf":{"numfmt":"yyyy/m/d"}}]}
+输出（`calls` 里每一项**可直接作为 sheet.update_range_data 的 arguments**）：
+  {"file_id":"...","worksheet_id":3,"batch_size":100,"total_ops":110,"call_count":2,
+   "calls":[
+     {"file_id":"...","worksheet_id":3,"rangeData":[
+        {"opType":"formula","rowFrom":191,"rowTo":191,"colFrom":11,"colTo":11,"formula":"x"},
+        {"opType":"format","rowFrom":191,"rowTo":196,"colFrom":12,"colTo":12,"xf":{"numfmt":"yyyy-mm-dd"}}]},
+     {"file_id":"...","worksheet_id":3,"rangeData":[ ... ]} ]}
+  （只有 1 批时，顶层额外给一份 rangeData 方便直接取用。）
 
-> 接口要点（2026-09 实测 kdocs 连接器 schema）：工作表参数名是 **worksheet_id**（不是 sheetId）；
-> 选区坐标字段是 camelCase 的 rowFrom/rowTo/colFrom/colTo + opType；日期格式走 `xf.numfmt`。
-> 写入后必须 `sheet.get_range_data` 回读核对，不能只信 `code: 0`。
+> 接口要点（2026-09 真机实测 kdocs 连接器 schema）：
+> - 工作表参数名是 **worksheet_id**（不是 sheetId）
+> - 选区坐标是 camelCase 的 rowFrom/rowTo/colFrom/colTo + opType；日期格式走 `xf.numfmt`
+> - **单次 rangeData 最多 100 条**，超出报 `length N exceeds limit 100` → 必须分批（见 calls）
+> - 每条 formula op 只能写「一个值」，N 个不同值就是 N 条 op，**无法靠合并收敛**；
+>   能合并的只有 format/merge/picture 这类区域操作
+> - 写入后必须 `sheet.get_range_data` 回读核对，不能只信 `code: 0`
 
 用法：
   python to_kdocs_payload.py --payload payload.json --out kdocs_update.json
-        [--file-id X] [--worksheet-id N] [--date-cols "M,V,W"] [--date-numfmt yyyy/m/d]
-        [--no-date-format] [--mode values|rangeData]
+        [--file-id X] [--worksheet-id N] [--date-cols "M,W"] [--date-numfmt yyyy-mm-dd]
+        [--no-date-format] [--batch-size 100]
 
 file_id / worksheet_id / date_columns 缺省时从 config.json（excel.kdocs / excel.date_columns）读取。
 """
@@ -97,6 +105,17 @@ def build_body(file_id, worksheet_id, range_data):
             "rangeData": range_data}
 
 
+def chunk_range_data(range_data, size=100):
+    """按连接器上限切批：单次 update_range_data 的 rangeData **最多 100 条**。
+
+    实测：超过会报 `rangeData length N exceeds limit 100`。
+    注意每条 formula op 只能写「一个值」，所以 N 个不同值就是 N 条 op，无法靠合并收敛；
+    故大表回填必须分批（幂等，失败可安全重放本批）。
+    """
+    size = max(1, int(size))
+    return [range_data[i:i + size] for i in range(0, len(range_data), size)] or [[]]
+
+
 def _runs(sorted_rows):
     """[1,2,3,7,8] -> [(1,3),(7,8)]：把连续行压成一段，减少请求条目。"""
     runs, start, prev = [], None, None
@@ -126,6 +145,8 @@ def main():
     ap.add_argument("--date-numfmt", default=None, help="日期数字格式，默认 yyyy/m/d")
     ap.add_argument("--no-date-format", action="store_true",
                     help="不补 format op（仅写值）")
+    ap.add_argument("--batch-size", type=int, default=100,
+                    help="单次请求的 rangeData 上限（连接器实测上限 100，超出会被拒）")
     ap.add_argument("--config", default=None)
     args = ap.parse_args()
 
@@ -164,8 +185,18 @@ def main():
         print("[warn] payload 里没有可写入的非空单元格，输出空 rangeData。", file=sys.stderr)
     rd = build_range_data(cells, date_cols0, date_numfmt, not args.no_date_format)
 
-    body = build_body(file_id, ws_id, rd)
-    text = json.dumps(body, ensure_ascii=False, indent=2)
+    chunks = chunk_range_data(rd, args.batch_size)
+    calls = [build_body(file_id, ws_id, c) for c in chunks]
+    # 单批时同时在顶层给出 rangeData，便于「一次调用就够」的常见场景直接取用
+    out = {"file_id": file_id if file_id else "<file_id>",
+           "worksheet_id": ws_id if ws_id is not None else "<worksheet_id>",
+           "batch_size": max(1, int(args.batch_size)),
+           "total_ops": len(rd),
+           "call_count": len(calls),
+           "calls": calls}
+    if len(calls) == 1:
+        out["rangeData"] = calls[0]["rangeData"]
+    text = json.dumps(out, ensure_ascii=False, indent=2)
     if args.out:
         with open(args.out, "w", encoding="utf-8") as f:
             f.write(text)
@@ -173,13 +204,16 @@ def main():
         print(f"[kdocs] {len(cells)} 个单元格 / {len({c for _r, c, _v in cells})} 列"
               f" / 行 {rows[0] + 1}~{rows[-1] + 1}（0-based {rows[0]}~{rows[-1]}）"
               if rows else "[kdocs] 无单元格")
-        print(f"[kdocs] rangeData {len(rd)} 条"
+        print(f"[kdocs] rangeData 共 {len(rd)} 条"
               + (f"（含 {len(rd) - len(cells)} 条日期格式）" if len(rd) > len(cells) else ""))
+        print(f"[kdocs] 需分 **{len(calls)}** 次调用"
+              f"（单次上限 {max(1, int(args.batch_size))} 条）："
+              + "、".join(f"第{i+1}批 {len(c)} 条" for i, c in enumerate(chunks)))
         print(f"[kdocs] 写入请求 → {args.out}")
         if "config" not in (cfg_path or ""):
             print(f"[kdocs] config: {cfg_path or '(未找到，缺省值已生效)'}")
-        print("  下一步：agent 用 sheet.get_range_data 回读同一区域核对（不信任 code:0）；"
-              "写入用 sheet.update_range_data，**不要用 sheet.add_row**（非幂等）。")
+        print("  下一步：agent 逐批调 sheet.update_range_data（**不要用 sheet.add_row**，非幂等），"
+              "全部写完后用 sheet.get_range_data 回读核对（不信任 code:0）。")
         if not file_id or ws_id is None:
             print("  ⚠ file_id / worksheet_id 仍是占位符：请在 config.excel.kdocs 里补全，"
                   "或改用 --file-id / --worksheet-id 传入。")

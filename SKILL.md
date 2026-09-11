@@ -77,15 +77,24 @@ python scripts/sheet_snapshot.py inspect --snapshot <output.dir>/sheet_snapshot.
 python scripts/to_kdocs_payload.py --payload payload.json --out kdocs_update.json
 python scripts/to_kdocs_payload.py --payload payload_n.json --out kdocs_update_n.json
 ```
-`to_kdocs_payload.py` 会把 editor_sdk 格式的 payload 转成 `sheet.update_range_data` 的 `rangeData`，并按 `excel.date_columns` 自动补 `format` op（`numfmt=yyyy-mm-dd`，`excel.kdocs.date_numfmt` 可改）。
+`to_kdocs_payload.py` 会把 editor_sdk 格式的 payload 转成 `sheet.update_range_data` 的 `rangeData`，按 `excel.date_columns` 自动补 `format` op（`numfmt` 取 `excel.kdocs.date_numfmt`），并按 **单次 100 条 op 的上限自动分批**——输出里的 `calls` 数组每项就是一次调用的 arguments，逐批调用即可。
 
-**写入必须用 `sheet.update_range_data`（按坐标写、幂等），不要用 `sheet.add_row`**——`add_row` 非幂等，网络重试或重复调用会插入多行脏数据。写入后**必须用 `sheet.get_range_data` 回读同一区域核对**，不要只信返回的 `code: 0`。
+**写入必须用 `sheet.update_range_data`（按坐标写、幂等），不要用 `sheet.add_row`**——`add_row` 非幂等，网络重试或重复调用会插入多行脏数据。写入后**必须用 `sheet.get_range_data` 回读同一区域核对**，不要只信返回的 `code: 0`（可用 `probe.py`/窄读比对预期值）。
 
 ### 云文档通道专属坑
-- **限频**：连接器有 `429001`/`429002`（熔断）。所有写入要合并成**一次** `update_range_data`（脚本已把同列连续行压成段），不要逐格写；命中限频要等响应里给的恢复时间，不要立刻重试。
-- **不幂等**：`add_row` 不要用；`update_range_data` 幂等，失败可安全重试。
+- **单次请求上限 100 条 op**：`sheet.update_range_data` 的 `rangeData` 超过 100 条会被拒
+  （实测报 `rangeData length 110 exceeds limit 100`）。`to_kdocs_payload.py` 已自动分批，
+  输出的 `calls` 数组每项可直接当一次调用的 arguments，**逐批调用、全部写完再回读核对**。
+- **op 数量 ≈ 值单元格数**：每条 `formula` op 只能写「一个值」，N 个不同值就是 N 条 op，
+  无法靠合并收敛（能合并的只有 format/merge/picture 这类区域操作）。所以 6 行 × 18 列 ≈ 107 条 + 日期格式几条，
+  分 2 批调用是正常的，不是脚本啰嗦。
+- **工作表参数名是 `worksheet_id`**（不是 `sheetId`），读写与 `get_sheets_info` 一致。
+- **限频**：连接器有 `429001`/`429002`（熔断）。不要逐格写、不要密集重试；命中限频要等响应里给的恢复时间。
+- **不幂等**：`add_row` 不要用；`update_range_data` 幂等，失败可安全重放该批。
 - **`.ksheet` 智能表格**：字段有类型（日期/单选等），写入值格式与 `.xlsx` 不同，需先确认文档类型再选写入形态。
 - **区域保护**：文档若设了区域权限（`sheet.list_protection_ranges`），写入会失败，需先让用户解除。
+- **日期格式**：目标表既有行的 `numFormat` 可能不统一（实测同一列老行 `yyyy/m/d`、新行 `yyyy-mm-dd`）——
+  **以最新行为准**，并写进 `excel.kdocs.date_numfmt`。
 - **临时文件**：`raw_*.json` / `kdocs_update*.json` 流程结束后应清理，别留在用户工作目录。
 
 ## 交互式流程（推荐）

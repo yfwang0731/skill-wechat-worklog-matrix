@@ -151,6 +151,14 @@ def smoke_kdocs_payload():
     assert set(body) == {"file_id", "worksheet_id", "rangeData"}, body.keys()
     assert body["worksheet_id"] == 3 and "sheetId" not in body
     assert build_body(None, None, [])["worksheet_id"] == "<worksheet_id>"
+    # 关键契约：单次 rangeData 上限 100 条 → 必须自动分批
+    from to_kdocs_payload import chunk_range_data
+    big = [{"opType": "formula"}] * 110
+    ch = chunk_range_data(big, 100)
+    assert [len(c) for c in ch] == [100, 10], [len(c) for c in ch]
+    assert sum(len(c) for c in ch) == 110
+    assert chunk_range_data([], 100) == [[]]
+    assert [len(c) for c in chunk_range_data(big, 1000)] == [110]
 
 
 def smoke_probe_analyze():
