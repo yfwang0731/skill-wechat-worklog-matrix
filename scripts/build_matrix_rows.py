@@ -8,13 +8,15 @@
   1) 预览：python build_matrix_rows.py preview --src <子代理JSON目录> --out <preview.csv>
            （人工裁决：删行序号、合并对）
   2) 终稿：python build_matrix_rows.py final --preview <preview.csv>
-           --remove "42,50" --merge "30:52,48:50" [--workbook <xlsx>] [--config config.json]
+           --remove "42,50" --merge "30:52,48:50" [--workbook <xlsx> | --snapshot <json>]
 
 合并对 a:b = 保留 a、删除 b。备注列默认清空（用户要求：单元格只写业务结果，不写判定/分析过程）。
+追加起始行来源优先级：--start-row-excel > --snapshot > --workbook > config.excel.start_row。
 """
 import json, os, re, csv, argparse, difflib
 
-from common import load_config, col_index, serial, next_append_row
+from common import (load_config, col_index, serial, next_append_row,
+                    next_append_row_snapshot)
 
 # 岗位词表：用于从"提出人"文本里剥离岗位（可通过 config.post_words 覆盖/扩展）
 DEFAULT_POST_WORDS = ["商务经理", "商务", "客服", "接单客服", "财务", "调度", "前程操作",
@@ -291,15 +293,21 @@ def cmd_final(args):
         for r in final:
             w.writerow({k: r.get(k, "") for k in mapping.keys()})
 
-    # 起始行：显式 > workbook 自动 > config
-    wb = args.workbook or (cfg.get("excel", {}) or {}).get("workbook")
+    # 起始行：显式 > 快照(云文档) > workbook 自动 > config
+    excel_cfg = cfg.get("excel", {}) or {}
+    hint = excel_cfg.get("sheet_match", "运维")
+    snap = getattr(args, "snapshot", None)
+    wb = args.workbook or excel_cfg.get("workbook")
     if args.start_row_excel:
         start = int(args.start_row_excel)
+    elif snap and os.path.isfile(snap):
+        start = next_append_row_snapshot(snap, hint, mapping)
+        print(f"[start-row] 由云文档快照自动计算 = {start}")
     elif wb and os.path.isfile(wb):
-        start = next_append_row(wb, (cfg.get("excel", {}) or {}).get("sheet_match", "运维"), mapping)
+        start = next_append_row(wb, hint, mapping)
         print(f"[start-row] 由工作簿自动计算 = {start}")
     else:
-        start = (cfg.get("excel", {}) or {}).get("start_row") or 2
+        start = excel_cfg.get("start_row") or 2
 
     cells = []
     for i, r in enumerate(final):
@@ -332,6 +340,8 @@ if __name__ == "__main__":
     p2.add_argument("--merge", default="")
     p2.add_argument("--out-dir")
     p2.add_argument("--workbook", default=None)
+    p2.add_argument("--snapshot", default=None,
+                    help="云文档快照 json（WPS 通道）；与 --workbook 二选一，用于自动算追加起始行")
     p2.add_argument("--start-row-excel", default=None)
     p2.add_argument("--config", default=None)
     a = ap.parse_args()

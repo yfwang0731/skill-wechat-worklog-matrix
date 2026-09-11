@@ -3,6 +3,7 @@
   "_comment2": "column_mapping 以下示例仅示意「逻辑列 -> 列字母」写法，不代表你的模板就是 A~Y；请用 `python probe.py workbook --workbook <你的xlsx>` 生成实际列映射后整体替换。date_columns 同理。",
   "_comment3": "post_words：从「提出人」文本剥离岗位后缀的词表（可选，缺省用 build_matrix_rows.DEFAULT_POST_WORDS）。people.counterparty_keyword 用于筛联系人；norm_o 仅在其作为整词前缀+分隔符时剥离，不会剥掉姓名本身。",
   "_comment4": "rules.* 消费方：merge_cross_session/similarity_threshold/near_days 由 build_matrix_rows 代码读取；ignore_if_rejected/ignore_if_no_reply/data_change_default_done 在派发判定子代理时按 references/agent-prompt-zh.txt 的【开关渲染表】注入提示词（不入 pipeline 脚本）；reuse_position_column=false 时跳过岗位复用（position_reuse 读取并退出）。account.dir 仅作人眼识别（pipeline 实际只读 db_storage/decrypted），可留占位。",
+  "_comment5": "excel.source 决定表格 I/O 通道：local（本地 xlsx）/ kdocs（WPS 云文档）。两条通道共用同一套列映射与判定逻辑，只是读表来源与回填方式不同；换通道不需要改账号/会话/规则配置。",
 
   "account": {
     "dir": "<可选：账号目录名，仅人眼识别用，pipeline 不读取>",
@@ -11,7 +12,19 @@
   },
 
   "excel": {
-    "workbook": "<需求跟踪矩阵 xlsx 绝对路径>",
+    "source": "local",
+    "_source_comment": "local=本地 xlsx（openpyxl 读 / editor_sdk 写）；kdocs=WPS 云文档（agent 代调 kdocs 连接器读快照 / 写 rangeData）。两条通道算法完全一致，只换 I/O。",
+    "workbook": "<需求跟踪矩阵 xlsx 绝对路径（source=local 时用）>",
+    "kdocs": {
+      "_comment": "source=kdocs 时用。定位方式三选一：link（推荐，整条 WPS 链接）/ file_id / name（走搜索，可能同名）。",
+      "link": "<WPS 文档链接，如 https://www.kdocs.cn/l/<link_id>>",
+      "file_id": "<或直接给 file_id>",
+      "drive_id": "<可选，file_id 能定位时可不填>",
+      "name": "<文档名，仅记录便于人眼核对>",
+      "sheet_id": null,
+      "_sheet_id_comment": "目标子表的 sheetId（kdocs 返回的是整数）。留 null 时脚本按 sheet_match 名字选；写入前必须填或由 probe 输出补上。",
+      "date_numfmt": "yyyy-mm-dd"
+    },
     "business_system_description": "<业务系统描述：一句话说明这些业务系统是什么，可选，渲染进提示词 {{业务系统描述}}>",
     "sheet_match": "运维",
     "header_row": 1,

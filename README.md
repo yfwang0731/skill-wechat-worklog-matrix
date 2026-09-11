@@ -1,16 +1,20 @@
 # wechat-worklog-matrix
 
-通用「微信 PC 聊天记录 → 需求跟踪矩阵 Excel」流水线（Weixin 4.x / WeChat 4.1+）。
+通用「微信 PC 聊天记录 → 需求跟踪矩阵」流水线（Weixin 4.x / WeChat 4.1+）。
 
 把客户/用户在微信里提出的系统需求，自动整理登记成需求跟踪矩阵台账：
-**探测 → 一次性确认 → 解密导出 → LLM 识别判定 → 人工裁决 → 回填 Excel**。
+**探测 → 一次性确认 → 解密导出 → LLM 识别判定 → 人工裁决 → 回填台账**。
 
 不绑定任何具体客户、项目或人员——服务对象、项目、会话、处理人全部由使用者通过 `config.json` 配置。
 
 ## 特性
 
-- **配置驱动，零内置假设**：账户 / Excel / 会话 / 时间范围 / 处理人全部由你选择；skill 内不出现任何真实账号、姓名、客户与项目标识。
-- **列位置靠表头识别**：`probe` 读取目标 Excel 表头自动生成「表头 → 列」映射，换模板也能用，不写死 A~AA。
+- **配置驱动，零内置假设**：账户 / 表格 / 会话 / 时间范围 / 处理人全部由你选择；skill 内不出现任何真实账号、姓名、客户与项目标识。
+- **两种表格来源**（`excel.source`）：
+  - `local` —— 本地 `.xlsx`，探测用 openpyxl、回填用 editor_sdk；
+  - `kdocs` —— **WPS 云文档**，只需给文档链接/名字，agent 直接读写云文档（金山文档连接器），不用把文件下载到本地。
+  两条通道共用同一套列映射、判定规则与 payload 结构，只换 I/O。
+- **列位置靠表头识别**：`probe` 读取目标表格表头自动生成「表头 → 列」映射，换模板也能用，不写死 A~AA。
 - **人在回路**：先探测一次性确认 → 子代理判定结果必须交人工裁决（删行/合并）后才回填。
 - **单元格只写业务结果**：备注等列一律不写判定依据/分析过程。
 - **合规边界**：解密使用第三方灰色工具 wcdb-key-tool（只读本机、数据不出电脑、使用前向用户确认）；聊天明文与探测中间产物全部留在本地并被 `.gitignore` 排除。
@@ -19,13 +23,16 @@
 
 ```bash
 # 0) 环境依赖
-pip install openpyxl            # probe workbook / build final / position_reuse 依赖
-#    Excel 须为 .xlsx（.xlsm 也支持）；旧版 .xls/.xlt 会被 probe 拒绝，请先另存为 .xlsx
+pip install openpyxl            # 仅本地表格通道需要；云文档通道不需要
+#    本地通道：表格须为 .xlsx（.xlsm 也支持）；旧版 .xls/.xlt 会被 probe 拒绝，请先另存为 .xlsx
+#    云文档通道：在 WorkBuddy 连接器管理里连接「金山文档」
 
-# 1) 探测（账户 / 会话 / Excel 表头映射，一次跑完供一次性确认）
+# 1) 探测（账户 / 会话 / 表头映射，一次跑完供一次性确认）
 python pipeline.py probe --workbook <你的需求矩阵.xlsx> --dump probe.json
+#    云文档通道：先按 SKILL.md「WPS 通道读表」取数生成快照，然后
+python pipeline.py probe --snapshot <output.dir>/sheet_snapshot.json --dump probe.json
 
-# 2) 一次性确认（把探测结果一起呈现给用户确认：账户 / Excel / 会话 / 时间范围 / 处理人）
+# 2) 一次性确认（把探测结果一起呈现给用户确认：账户 / 表格来源 / 会话 / 时间范围 / 处理人）
 
 # 3) 写 config.json（复制 config.example.json 填写 account / excel / people / scope / defaults）
 
@@ -33,10 +40,13 @@ python pipeline.py probe --workbook <你的需求矩阵.xlsx> --dump probe.json
 python pipeline.py run
 python scripts/build_matrix_rows.py preview --src <output.dir>/transcripts/_out --out merged_preview.csv
 python scripts/build_matrix_rows.py final --preview merged_preview.csv --remove "..." --merge "a:b"
-python scripts/position_reuse.py --workbook <xlsx> --out payload_n.json  # 默认只填空缺，--override 才覆盖；rules.reuse_position_column=false 时跳过
+python scripts/position_reuse.py --workbook <xlsx> --out payload_n.json  # 默认只填空缺，--override 才覆盖
 #    （<output.dir>/transcripts/_out 即 run 产物目录，output.dir 默认 ./wechat_pilot）
 #    （派发判定子代理前，按 config 的 rules.*/people.my_identifiers 渲染 references/agent-prompt-zh.txt，勿发裸模板）
-#    用 tencent-local-office-edit 把 payload*.json 回填到目标子表
+#    本地通道：用 tencent-local-office-edit 把 payload*.json 回填到目标子表
+#    云文档通道：position_reuse 改用 --snapshot；再
+python scripts/to_kdocs_payload.py --payload payload.json --out kdocs_update.json
+#    然后 agent 调 sheet.update_range_data 写回，并 sheet.get_range_data 回读核对
 ```
 
 解密工具 wcdb-key-tool（第三方，不在本仓库内）：
@@ -46,6 +56,18 @@ git clone https://github.com/TANGandXUE/wcdb-key-tool scripts/tools/wcdb-key-too
 # 或设置环境变量 WCDB_KEY_TOOL 指向 wcdb_key_tool_windows.py
 ```
 
+## 两条表格通道对照
+
+| 环节 | `local`（本地 xlsx） | `kdocs`（WPS 云文档） |
+|---|---|---|
+| 读表头/末行 | `probe.py workbook --workbook <xlsx>` | agent 调连接器取数 → `sheet_snapshot.py build` → `probe.py workbook --snapshot <json>` |
+| 岗位复用 | `position_reuse.py --workbook <xlsx>` | `position_reuse.py --snapshot <json>` |
+| 算追加起始行 | `build_matrix_rows.py final --workbook <xlsx>` | `build_matrix_rows.py final --snapshot <json>` |
+| 回填 | payload → `tencent-local-office-edit` | payload → `to_kdocs_payload.py` → `sheet.update_range_data` |
+| 额外依赖 | openpyxl | 金山文档连接器 |
+
+> 云文档写入**用 `sheet.update_range_data`（幂等），不要用 `sheet.add_row`**（后者非幂等，重试会插多行脏数据）；写后必须回读核对。
+
 ## 目录结构
 
 ```
@@ -54,13 +76,15 @@ wechat-worklog-matrix/
 ├── config.example.json         # 配置模板（复制为 config.json 后填写）
 ├── pipeline.py                 # 编排入口：probe（探测）/ run（解密→导出→分包）
 ├── scripts/
-│   ├── probe.py                #   探测账户/会话/Excel 表头映射（支持 --json）
+│   ├── probe.py                #   探测账户/会话/表头映射（本地 --workbook / 云文档 --snapshot，支持 --json）
+│   ├── sheet_snapshot.py       #   云文档通道：读表计划 / 稀疏返回→密集网格快照 / 快照核对
+│   ├── to_kdocs_payload.py     #   云文档通道：payload → sheet.update_range_data 的 rangeData
 │   ├── decrypt.py              #   封装 wcdb-key-tool 解密（密钥按账号隔离）
 │   ├── export_conversations.py #   按 config 导出指定会话转录
 │   ├── split_for_agents.py     #   转录按文件大小均衡分 N 份给子代理
 │   ├── build_matrix_rows.py    #   preview（去重标记+裁决）/ final（生成回填 payload）
-│   ├── position_reuse.py       #   岗位列向上复用计划（依 config 列映射；原名岗位复用脚本）
-│   ├── common.py               #   配置加载 / 路径识别 / 日期与列工具
+│   ├── position_reuse.py       #   岗位列向上复用计划（依 config 列映射）
+│   ├── common.py               #   配置加载 / 路径识别 / 日期与列工具 / 云文档快照抽象层
 │   └── smoke_test.py           #   自检：import + 纯函数断言
 └── references/
     ├── agent-prompt-zh.txt     # 需求识别子代理提示词模板
@@ -72,8 +96,8 @@ wechat-worklog-matrix/
 修改代码后运行：
 
 ```bash
-python scripts/smoke_test.py        # import 全模块 + 纯函数断言
-python scripts/smoke_test.py --full # 额外校验依赖 openpyxl 的模块
+python scripts/smoke_test.py        # import 全模块 + 纯函数断言（含快照抽象层 / kdocs payload 转换）
+python scripts/smoke_test.py --full # 额外跑附加检查
 ```
 
 ## 许可
@@ -84,6 +108,6 @@ python scripts/smoke_test.py --full # 额外校验依赖 openpyxl 的模块
 
 ## 合规与隐私说明
 
-- 本 skill 不采集、不上传任何聊天数据；探测/导出/解密产物均在本机，且已被 `.gitignore` 排除（`wechat_pilot/`、`*.db`、`keys_*.json`、`config.json`）。
+- 本 skill 不采集、不上传任何聊天数据；探测/导出/解密产物均在本机，且已被 `.gitignore` 排除（`wechat_pilot/`、`*.db`、`keys_*.json`、`config.json`、`sheet_snapshot.json`、`raw_*.json`、`kdocs_update*.json`、`payload*.json`）。
 - 仓库内不包含任何真实账号目录、姓名、微信号、客户名或项目号。
 - wcdb-key-tool 属第三方灰色工具：使用前需向用户确认，只读本机、数据不出电脑。

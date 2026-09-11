@@ -115,16 +115,20 @@ def serial(dstr):
         return ""
 
 
-def next_append_row(workbook_path, sheet_hint="运维", mapping=None):
-    """返回子表（名含 sheet_hint）下一个可追加行号（1-based）。
+def pick_sheet(workbook, sheet_hint=None):
+    """按名字含 sheet_hint 选子表，找不到退回第一张。workbook 可为 openpyxl 或 GridWorkbook。"""
+    names = list(workbook.sheetnames)
+    hint = sheet_hint or ""
+    cand = [n for n in names if hint and hint in n]
+    return workbook[cand[0] if cand else names[0]]
+
+
+def next_append_row_ws(ws, mapping=None):
+    """返回工作表下一个可追加行号（1-based）。
 
     mapping 为 column_mapping（逻辑列名->列字母）时，以"需求描述/提出时间/提出人"列
     有无值判定数据行；否则退化为扫描前 27 列。
     """
-    import openpyxl
-    wb = openpyxl.load_workbook(workbook_path)
-    names = [s for s in wb.sheetnames if sheet_hint in s]
-    ws = wb[names[0] if names else wb.sheetnames[0]]
     probe_cols = []
     if mapping:
         for key in ("需求描述", "提出时间", "提出人"):
@@ -138,6 +142,158 @@ def next_append_row(workbook_path, sheet_hint="运维", mapping=None):
         if any(ws.cell(row=r, column=c).value not in (None, "") for c in probe_cols):
             last = r
     return last + 1
+
+
+def next_append_row(workbook_path, sheet_hint="运维", mapping=None):
+    """本地 xlsx 版本的追加起始行（依赖 openpyxl）。云文档通道请用 next_append_row_ws + 快照。"""
+    import openpyxl
+    wb = openpyxl.load_workbook(workbook_path)
+    return next_append_row_ws(pick_sheet(wb, sheet_hint), mapping)
+
+
+# ---------------- 表格快照（云文档 / WPS 通道）----------------
+# 脚本无法直连 MCP 连接器，故两端都收敛到 JSON：
+#   读：agent 调 kdocs sheet.get_range_data → 原始返回存 raw.json → sparse_to_grid 成快照
+#   写：脚本产出 payload → to_kdocs_payload.py 转 rangeData → agent 调 sheet.update_range_data
+# 快照结构见 sheet_snapshot.py 文档字符串。
+
+class _Cell:
+    """冒充 openpyxl 的 Cell（本 skill 只用到 .value）。"""
+    __slots__ = ("value",)
+
+    def __init__(self, value):
+        self.value = value
+
+
+class GridSheet:
+    """用二维字符串数组冒充工作表，接口与 openpyxl 用到的部分保持一致（行列 1-based）。"""
+
+    def __init__(self, name, rows, num_formats=None, sheet_id=None):
+        self.title = name
+        self.sheet_id = sheet_id
+        self._rows = [[("" if v is None else str(v)) for v in r] for r in (rows or [])]
+        self.num_formats = num_formats or {}
+
+    @property
+    def max_row(self):
+        return len(self._rows)
+
+    @property
+    def max_column(self):
+        return max((len(r) for r in self._rows), default=0)
+
+    def cell(self, row=1, column=1):
+        r, c = row - 1, column - 1
+        v = ""
+        if 0 <= r < len(self._rows) and 0 <= c < len(self._rows[r]):
+            v = self._rows[r][c]
+        return _Cell(v if v != "" else None)
+
+    def row_values(self, row=1):
+        r = row - 1
+        return list(self._rows[r]) if 0 <= r < len(self._rows) else []
+
+
+class GridWorkbook:
+    """冒充 openpyxl Workbook（只实现 .sheetnames / __getitem__）。"""
+
+    def __init__(self, sheets):
+        self._sheets = list(sheets)
+        self.sheetnames = [s.title for s in self._sheets]
+
+    def __getitem__(self, name):
+        for s in self._sheets:
+            if s.title == name:
+                return s
+        raise KeyError(name)
+
+
+def _entry_value(entry):
+    """从 kdocs 单元格条目取"人看的文本"：cellText 优先（公式则退回原始值）。"""
+    txt = entry.get("cellText")
+    orig = entry.get("originalCellValue")
+    if txt not in (None, "") and not str(txt).startswith("="):
+        return str(txt)
+    if orig not in (None, ""):
+        return str(orig)
+    return ""
+
+
+def merge_range_data(store, range_data):
+    """把一个 kdocs rangeData（稀疏）并入累加器 store（原地修改）。
+
+    store = {"cells": {(r,c): str}, "num_formats": {"r,c": fmt}, "max_row": int, "max_col": int}
+    """
+    store.setdefault("cells", {})
+    store.setdefault("num_formats", {})
+    for e in range_data or []:
+        if not isinstance(e, dict):
+            continue
+        try:
+            rf = int(e.get("rowFrom", 0) or 0)
+            cf = int(e.get("colFrom", 0) or 0)
+            rt = int(e.get("rowTo", rf) if e.get("rowTo") is not None else rf)
+            ct = int(e.get("colTo", cf) if e.get("colTo") is not None else cf)
+        except (TypeError, ValueError):
+            continue
+        v = _entry_value(e)
+        nf = e.get("numFormat")
+        for r in range(min(rf, rt), max(rf, rt) + 1):
+            for c in range(min(cf, ct), max(cf, ct) + 1):
+                store["cells"][(r, c)] = v
+                if nf:
+                    store["num_formats"][f"{r},{c}"] = nf
+                if r > store.get("max_row", -1):
+                    store["max_row"] = r
+                if c > store.get("max_col", -1):
+                    store["max_col"] = c
+    return store
+
+
+def store_to_rows(store):
+    """累加器 -> 紧凑二维列表（裁掉尾部/右侧全空行列）。"""
+    cells = store.get("cells") or {}
+    maxr, maxc = store.get("max_row", -1), store.get("max_col", -1)
+    rows = [[cells.get((r, c), "") for c in range(maxc + 1)] for r in range(maxr + 1)]
+    while rows and not any(str(x).strip() for x in rows[-1]):
+        rows.pop()
+    width = max((len(r) for r in rows), default=0)
+    while width and all(not str(r[width - 1]).strip() for r in rows):
+        width -= 1
+    return [r[:width] for r in rows]
+
+
+def sparse_to_grid(range_data):
+    """kdocs rangeData（稀疏）-> (rows, num_formats)。"""
+    store = merge_range_data({}, range_data)
+    return store_to_rows(store), store.get("num_formats") or {}
+
+
+def load_snapshot(path):
+    with open(path, encoding="utf-8") as f:
+        return json.load(f)
+
+
+def workbook_from_snapshot(snap):
+    """快照 dict -> GridWorkbook。"""
+    sheets = []
+    for i, s in enumerate((snap or {}).get("sheets") or [], 1):
+        rows = s.get("rows")
+        if rows is None:
+            rows, fmts = sparse_to_grid(s.get("rangeData"))
+            s.setdefault("num_formats", fmts)
+        sheets.append(GridSheet(s.get("name") or f"sheet{i}", rows,
+                                s.get("num_formats"), s.get("sheetId")))
+    if not sheets:
+        raise ValueError("快照里没有任何工作表（sheets 为空）：请先按 SKILL.md 的"
+                         "「WPS 通道读表」把 kdocs 返回存成 raw.json 再 build。")
+    return GridWorkbook(sheets)
+
+
+def next_append_row_snapshot(snapshot_path, sheet_hint="运维", mapping=None):
+    """快照版本的追加起始行（不依赖 openpyxl）。"""
+    wb = workbook_from_snapshot(load_snapshot(snapshot_path))
+    return next_append_row_ws(pick_sheet(wb, sheet_hint), mapping)
 
 
 if __name__ == "__main__":
