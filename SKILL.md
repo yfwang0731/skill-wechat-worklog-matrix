@@ -129,12 +129,14 @@ python scripts/to_kdocs_payload.py --payload payload_n.json --out kdocs_update_n
 写完后**必须用 `sheet.get_range_data` 回读同一区域核对**，不能只信 `code: 0`。
 
 ### 云文档通道专属坑
-- **纯文本可能被表格引擎改写**：所有值都以 `opType:"formula"` 写入，所以以 `= + - @` 开头、
-  或带前导零 / 16 位以上纯数字的文本，可能被当作公式或数值（丢零、丢精度）。
-  `to_kdocs_payload.py` 会**显式告警**列出这类值（命中数 + 前 10 条 + 原因），**但不改写值** ——
-  写入前先与用户确认；必须原样保留时，先在 WPS 里把目标列设为「文本」格式再写。
-  （刻意不做自动转义：`'` 前缀之类语义依赖具体表格引擎，未真机确认前加上去反而会把
-  "可能被改写"变成"一定被改写"。）
+- **纯文本可能被表格引擎改写（脚本已自动转义）**：所有值都以 `opType:"formula"` 写入，因此
+  `= + - @ '` 开头、带前导零、或 ≥16 位纯数字的文本会被当公式/数值处理。**真机实测**
+  （2026-09-11，`create_file_with_content` 与 `sheet.update_range_data` 行为一致，回读用 `get_typed_value`）：
+  `0012`→数值 **12**（丢零）；`=A1`→**被当真公式求值**，值变成了 A1 单元格的内容；
+  `12345678901234567`→**丢精度**（…500）；`+86`→**86**。全是静默改写、不报错。
+  → `to_kdocs_payload.py` **默认自动转义**：给这类值前置一个单引号（引擎把它当"文本标记"
+  消费掉，**回读值不含引号**，实测无损），并在输出里列出命中项与原因。
+  确实想按公式写入时才用 `--no-escape-risky-text`（会附带告警说明数据会不一致）。
 - **限频** `429001`/`429002`（熔断）：不要逐格写、不要密集重试；命中限频要等响应里给的恢复时间。
 - **`.ksheet` 智能表格**：字段有类型（日期/单选等），写入形态与 `.xlsx` 不同，先确认文档类型。
 - **区域保护**：文档若设了区域权限（`sheet.list_protection_ranges`），写入会失败，先让用户解除。
@@ -257,7 +259,7 @@ python scripts/build_matrix_rows.py final --preview merged_preview.csv --start-r
 | `sheet_snapshot.py` | `plan --file-id <id> --worksheet-id <n> [--rows] [--cols] [--letters "L,M,O"]`；`build --raw <f>… --out <json> [--sheet <名>] [--worksheet-id] [--file-id] [--drive-id] [--name]`；`inspect --snapshot <json>` |
 | `build_matrix_rows.py` | `preview --src <_out> --out <csv> [--config]`；`final --preview <csv> [--remove "1,3"] [--merge "a:b"] [--out-dir] (--workbook <xlsx> \| --snapshot <json> \| --start-row-excel N) [--reuse-position \| --no-reuse-position] [--history <json>] [--config]` |
 | `position_reuse.py` | `(--workbook <xlsx> \| --snapshot <json> \| --history <json>) --out <json> (--new-rows <final_rows.csv> \| --start-row N) [--override] [--end-row N] [--config]` —— **必须给 `--new-rows` 或 `--start-row`，两者都不给直接报错** |
-| `to_kdocs_payload.py` | `--payload <json> [--out <json>] [--file-id] [--worksheet-id] [--date-cols "M,V,W"] [--date-numfmt yyyy-mm-dd] [--no-date-format] [--batch-size 100] [--config]` |
+| `to_kdocs_payload.py` | `--payload <json> [--out <json>] [--file-id] [--worksheet-id] [--date-cols "M,V,W"] [--date-numfmt yyyy-mm-dd] [--no-date-format] [--no-escape-risky-text] [--batch-size 100] [--config]` |
 
 ## 可配置项（见 `config.example.json`）
 | 类别 | 变量 | 说明 |
