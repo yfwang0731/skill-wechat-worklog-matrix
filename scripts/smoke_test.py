@@ -192,6 +192,18 @@ def smoke_probe_analyze():
     assert res["date_columns"] == ["D"], res["date_columns"]
     assert res["handler_candidates"][0]["value"] == "李四", res["handler_candidates"]
 
+    # N3: 表头行的主判据是「命中内置别名数」，不能被"更满的数据行"骗过
+    #（种子表：数据行 4 个非空 > 表头 3 个非空，但别名命中 0 < 3）。
+    # 旧规则只比非空数 → 会把数据行当表头 → 列映射为空（虽然会被 C1 守卫拦住，但整表读不了）。
+    sloppy = [
+        ["项目编号", "需求描述", "提出人"],
+        ["P1", "改个费用", "张三", "多出来的一列"],
+    ]
+    res2 = analyze_workbook(GridWorkbook([GridSheet("运维", sloppy)]), None, "snap.json")
+    assert res2["header_row"] == 1, res2["header_row"]
+    assert res2["column_mapping"].get("需求描述") == "B", res2["column_mapping"]
+    assert res2["column_mapping"].get("提出人") == "C", res2["column_mapping"]
+
 
 def smoke_message_decoding():
     """消息正文解码：ZSTD 压缩 / appmsg 引用 / 系统消息 归一化。"""
@@ -214,6 +226,13 @@ def smoke_message_decoding():
     got = render_content(xml, 0, 49)
     assert got.startswith("[链接/文件] ") and "记得帮忙改" in got and "差额逻辑改吧" in got, got
     assert appmsg_summary("<msg></msg>") == ""
+    # N4 兜底：无 title/des/引用时，外层 <content> 或 <url> 也要能取出来，否则只剩 `[链接/文件]`
+    assert appmsg_summary('<msg><appmsg><content>把箱号也显示出来</content></appmsg></msg>') \
+        == "把箱号也显示出来"
+    assert appmsg_summary('<msg><appmsg><url>https://x.cn/a</url></appmsg></msg>') == "https://x.cn/a"
+    # 引用正文只能算一次：有 refermsg 时兜底不得把它再抓一遍
+    only_ref = '<msg><appmsg><refermsg><content>引用正文</content></refermsg></appmsg></msg>'
+    assert appmsg_summary(only_ref) == "引用: 引用正文", appmsg_summary(only_ref)
     # 系统消息 / 撤回 / 通话
     assert render_content('<sysmsg type="revokemsg"><content>x</content></sysmsg>', 0, 10000) == "[撤回了一条消息]"
     assert render_content('<sysmsg type="roomtoolstips">x</sysmsg>', 0, 10000) == "[系统消息]"
