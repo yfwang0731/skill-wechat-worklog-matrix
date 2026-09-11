@@ -82,11 +82,15 @@ git clone https://github.com/TANGandXUE/wcdb-key-tool scripts/tools/wcdb-key-too
 - **纯文本值会被表格引擎静默改写**（`0012`→12、`=A1` 被当真公式求值、17 位数字丢精度、
   `+86`→86）。`to_kdocs_payload.py` 已**默认自动转义**并列出命中项。
 
+从「为什么必须自己解密」到最近一次修复的**完整开发过程**（含每个阶段的取舍、被推翻的结论、
+以及独立的评测记录）见 [`CHANGELOG.md`](CHANGELOG.md)。
+
 ## 目录结构
 
 ```
 wechat-worklog-matrix/
 ├── SKILL.md                    # 技能主文档：流程 / 判定规则 / 真机坑 / 速查表
+├── CHANGELOG.md                # 完整开发过程（缘起 / 逐日变更 / 独立评测记录 / 设计不变量）
 ├── config.example.json         # 配置模板（复制为 config.json 后填写）
 ├── pipeline.py                 # 编排入口：probe（探测）/ run（解密→导出→分包）
 ├── scripts/
