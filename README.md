@@ -23,6 +23,31 @@
 - **合规边界**：解密用第三方灰色工具 wcdb-key-tool（只读本机、数据不出电脑、使用前向用户确认）；
   聊天明文与探测中间产物全部留在本地并被 `.gitignore` 排除。
 
+## 安装
+
+本技能是 WorkBuddy 的 skill，**不需要 Release** —— 下载或 clone 到技能目录即可：
+
+```bash
+# 方式 A：clone 到用户级技能目录（所有项目都能用）
+#   Windows 的技能目录：%USERPROFILE%\.workbuddy\skills\
+git clone https://github.com/yfwang0731/skill-wechat-worklog-matrix.git \
+  ~/.workbuddy/skills/wechat-worklog-matrix
+
+# 方式 B：网页右上 Code → Download ZIP，解压到同一位置
+```
+
+- **只给单个项目用**：放到 `<项目根>/.workbuddy/skills/`。
+- **目录名请用 `wechat-worklog-matrix`**（与 `SKILL.md` 里的 `name` 一致），
+  不要保留 `skill-` 前缀、也不要多套一层目录。
+- 装好后确认路径形如 `…/skills/wechat-worklog-matrix/SKILL.md`，
+  然后在 WorkBuddy 里应能看到该技能。
+
+更新已安装的技能：
+
+```bash
+git -C ~/.workbuddy/skills/wechat-worklog-matrix pull
+```
+
 ## 快速开始
 
 ```bash
