@@ -35,7 +35,37 @@
 - 封装脚本 `scripts/decrypt.py`：extract → decrypt；详见其 docstring。
 - 合规：只读本机、数据不出电脑，使用前向用户确认。
 
-## 表格回填（editor_sdk / tencent-local-office-edit 技能）
+## 两种表格来源（`excel.source`：local / kdocs）
+**两条通道算法完全一致**（列映射 / 判定规则 / payload 结构 / 岗位复用逻辑都不变），只换读表与回填的 I/O。用户可能给本地文件，也可能只说"改 WPS 上那个文档"。
+
+### 通道 A：local（本地 .xlsx）
+- 读：`probe.py workbook --workbook <xlsx>`、`position_reuse.py --workbook <xlsx>`（openpyxl）。
+- 追加起始行：`build_matrix_rows.py final --workbook <xlsx>`。
+- 回填：editor_sdk（见下节）。
+
+### 通道 B：kdocs（WPS 云文档）
+**为什么必须多一层"快照"**：连接器的 MCP 工具**只有 agent 能调，Python 脚本调不到**。所以：
+- 读：agent 调 `sheet.get_range_data` → 原始返回**原样**落 `raw_*.json` → `sheet_snapshot.py build` 重建密集网格快照 → 脚本读快照。
+- 写：脚本产出 payload → `to_kdocs_payload.py` 转 `rangeData` → agent 调 `sheet.update_range_data`。
+
+读表**分两趟窄读**，别把整表搬进上下文：
+1. 先 `sheet.get_sheets_info` 拿工作表清单 / `sheetId` / 已用区域上限。
+2. 第 1 趟只读前 3 行 × 全部列 → 识别表头（目的是拿到 column_mapping）。
+3. 第 2 趟按映射只读关键列（需求描述/提出时间/提出人/提出人岗位/解决人…）整表 → 算末数据行与岗位复用。
+
+坑位：
+- `sheet.get_range_data` 返回**稀疏**数组（行列 0-based，只含有值的单元格）；`build` 会重建成密集网格并裁掉尾部/右侧空行列。range 覆盖多格时按"合并单元格"语义整块填同一值。
+- 单元格取值优先 `cellText`，公式单元格退回 `originalCellValue`；`numFormat` 会存进快照的 `num_formats` 备用。
+- **写入必须用 `sheet.update_range_data`（幂等、按坐标），不要用 `sheet.add_row`**——add_row 非幂等，重试/重复调用会插多行脏数据。
+- 写后**必须** `sheet.get_range_data` 回读同一区域核对，不能只信 `code: 0`。
+- 限频 `429001`/`429002`：批量写要合并成一次请求（`to_kdocs_payload.py` 已把同列连续行压成一段），命中限频按响应给的恢复时间等待，别立刻重试。
+- 日期：与本地通道一致写 Excel 序列号，并额外补 `format` op（`numfmt=yyyy-mm-dd`，见 `excel.kdocs.date_numfmt`）；`--no-date-format` 可只写值。
+- `.ksheet` 智能表格有字段类型（日期/单选等），写入形态与 `.xlsx` 不同，需先确认文档类型。
+- 文档若设区域保护（`sheet.list_protection_ranges`），写入会失败，先让用户解除。
+- 定位优先用**链接**（`get_share_info(link_id)`）；只给文件名要走 `search_files` 并**让用户确认**（同名风险）。
+- `raw_*.json` / `kdocs_update*.json` 是中间产物，流程结束要清理。
+
+## 表格回填（本地通道：editor_sdk / tencent-local-office-edit 技能）
 1. 先 Skill 加载 tencent-local-office-edit 拿 edsdk.py 路径；读 sheet.md。
 2. open_file → 按 `excel.sheet_match` 关键字匹配子表（不要写死年份）→ sheet_get_used_range 探边界；
    追加起始行用 `common.next_append_row(<xlsx>, sheet_hint, mapping)`。

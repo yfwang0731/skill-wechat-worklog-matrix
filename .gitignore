@@ -11,6 +11,14 @@ keys_*.json
 # 本地个人配置（含账号目录/路径等占位符，由 config.example.json 复制而来，不入库）
 config.json
 
+# 云文档通道中间产物（含真实表格内容/文档 id，不入库）
+sheet_snapshot.json
+raw_*.json
+kdocs_update*.json
+payload*.json
+merged_preview.csv
+final_rows.csv
+
 # 编辑器 / 系统文件
 .vscode/
 .idea/

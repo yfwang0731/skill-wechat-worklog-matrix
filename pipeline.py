@@ -6,8 +6,11 @@
   run    确认后执行：解密 → 导出转录 → 分包给并行子代理，并打印后续 LLM/人工步骤。
 
 所有可变项都从 config.json 读；config 由 probe 的探测结果 + 用户选择生成。
+表格来源两条通道（config.excel.source）算法一致、只换 I/O：
+  local —— 本地 .xlsx（openpyxl 读 / editor_sdk 写）
+  kdocs —— WPS 云文档（agent 代调 kdocs 连接器：读快照、写 rangeData）
 用法：
-  python pipeline.py probe [--workbook <xlsx>] [--keyword <关键字>]
+  python pipeline.py probe [--workbook <xlsx> | --snapshot <json>] [--keyword <关键字>]
   python pipeline.py run [--skip-decrypt] [--since <日期>]
 """
 import os
@@ -58,10 +61,28 @@ def cmd_probe(args):
     for i, a in enumerate(out["accounts"], 1):
         print(f"  {i}. {a['account_dir']}  (更新于 {a.get('last_modified','')})")
 
-    wb = args.workbook or (cfg.get("excel", {}) or {}).get("workbook")
-    if wb and os.path.isfile(wb):
+    excel_cfg = cfg.get("excel", {}) or {}
+    wb = args.workbook or excel_cfg.get("workbook")
+    # 云文档通道：显式 --snapshot，或按约定位置找 <output.dir>/sheet_snapshot.json
+    snap = getattr(args, "snapshot", None)
+    if not snap and excel_cfg.get("source") == "kdocs":
+        cand = os.path.join(os.path.abspath((cfg.get("output", {}) or {}).get("dir")
+                                            or "./wechat_pilot"), "sheet_snapshot.json")
+        if os.path.isfile(cand):
+            snap = cand
+    if snap and os.path.isfile(snap):
         print("=" * 60)
-        print("② Excel 表头 → 列映射")
+        print("② 表格表头 → 列映射（WPS 云文档快照）")
+        print("=" * 60)
+        wbj = run_probe_json(["probe.py", "workbook", "--snapshot", snap, "--json"])
+        out["workbook"] = wbj
+        if wbj:
+            print(f"  快照 {snap}")
+            print(f"  子表「{wbj.get('sheet_selected')}」表头第 {wbj.get('header_row')} 行；"
+                  f"列映射 {len(wbj.get('column_mapping', {}))} 项 → 追加起始行 {wbj.get('next_append_row')}")
+    elif wb and os.path.isfile(wb):
+        print("=" * 60)
+        print("② 表格表头 → 列映射（本地 xlsx）")
         print("=" * 60)
         wbj = run_probe_json(["probe.py", "workbook", "--workbook", wb, "--json"])
         out["workbook"] = wbj
@@ -69,7 +90,14 @@ def cmd_probe(args):
             print(f"  子表「{wbj.get('sheet_selected')}」表头第 {wbj.get('header_row')} 行；"
                   f"列映射 {len(wbj.get('column_mapping', {}))} 项 → 追加起始行 {wbj.get('next_append_row')}")
     else:
-        print("\n② 未提供 Excel（--workbook 或 config.excel.workbook），跳过列映射探测。")
+        print("\n② 未提供表格来源，跳过列映射探测。")
+        if excel_cfg.get("source") == "kdocs":
+            print("   云文档通道请先按 SKILL.md「WPS 通道读表」取数并生成快照：")
+            print("   python scripts/sheet_snapshot.py plan --file-id <id> --sheet-id <n>")
+            print("   python scripts/sheet_snapshot.py build --raw raw_hdr.json --raw raw_cols.json "
+                  "--out <output.dir>/sheet_snapshot.json")
+        else:
+            print("   本地通道请给 --workbook 或写 config.excel.workbook。")
 
     dec = (cfg.get("account", {}) or {}).get("decrypted") or \
         os.path.join(os.getcwd(), "wechat_pilot", "output", "decrypted")
@@ -150,6 +178,7 @@ def cmd_run(args):
         sys.exit("✗ 分包失败，见上。")
 
     outdir = out_sub
+    send = (cfg.get("excel", {}) or {}).get("source") or "local"
     print("\n========== 下一步（需 LLM + 人工）==========")
     print(f"① 把 references/agent-prompt-zh.txt 模板 + 各 {outdir}/agent_N.txt 清单，")
     print(f"   交给 {n} 个并行子代理，产出 JSON 写到 {outdir}/。")
@@ -158,9 +187,22 @@ def cmd_run(args):
     print("③ 用户确认后生成最终行 + 回填 payload：")
     print(f"   python scripts/build_matrix_rows.py final --preview {outdir}/merged_preview.csv "
           f'--remove "<删行序号>" --merge "<a:b>,..."')
-    print("④ 岗位列复用：python scripts/position_reuse.py --workbook <xlsx> --out payload_n.json")
-    print("⑤ 用 tencent-local-office-edit 把 payload.json / payload_n.json 回填到目标子表，")
-    print("   日期列设 number_format yyyy-mm-dd，保存后确认扩展名=.xlsx。")
+    if send == "kdocs":
+        print("   表头来自云文档快照时追加： --snapshot <output.dir>/sheet_snapshot.json")
+    print("④ 岗位列复用：")
+    if send == "kdocs":
+        print("   python scripts/position_reuse.py --snapshot <output.dir>/sheet_snapshot.json "
+              "--out payload_n.json")
+    else:
+        print("   python scripts/position_reuse.py --workbook <xlsx> --out payload_n.json")
+    if send == "kdocs":
+        print("⑤ 生成写入请求并回填到 WPS 云文档：")
+        print("   python scripts/to_kdocs_payload.py --payload payload.json --out kdocs_update.json")
+        print("   agent 用 sheet.update_range_data（**不要用 sheet.add_row**，非幂等）写入，")
+        print("   再用 sheet.get_range_data 回读核对（不信任 code:0）。")
+    else:
+        print("⑤ 用 tencent-local-office-edit 把 payload.json / payload_n.json 回填到目标子表，")
+        print("   日期列设 number_format yyyy-mm-dd，保存后确认扩展名=.xlsx。")
     print("=============================================")
 
 
@@ -170,7 +212,8 @@ def main():
     sub = ap.add_subparsers(dest="cmd", required=True)
 
     p1 = sub.add_parser("probe", help="探测账户/会话/表头，一次性确认")
-    p1.add_argument("--workbook", default=None)
+    p1.add_argument("--workbook", default=None, help="本地 xlsx（本地通道）")
+    p1.add_argument("--snapshot", default=None, help="云文档快照 json（WPS 通道）")
     p1.add_argument("--since", default=None)
     p1.add_argument("--keyword", default=None)
     p1.add_argument("--dump", default=None, help="把探测结果写为 JSON")

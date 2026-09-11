@@ -5,7 +5,8 @@
 三个子命令：
   python probe.py accounts                                   # 列出本机微信账户
   python probe.py sessions --decrypted <dir> [--since] [--keyword]   # 列出可选会话
-  python probe.py workbook --workbook <xlsx> [--sheet]       # 解析表头 → 列映射 + 末行 + 处理人候选
+  python probe.py workbook --workbook <xlsx> [--sheet]       # 本地通道：解析表头 → 列映射 + 末行 + 处理人候选
+  python probe.py workbook --snapshot <json> [--sheet]       # 云文档通道：同一套解析，读快照而非 xlsx
 
 输出统一 JSON 到 stdout（便于 agent 读取），同时打印人类可读摘要。
 """
@@ -45,7 +46,8 @@ COLUMN_ALIASES = {
 }
 
 # 需要按日期格式写入的列（匹配到逻辑列后据此设置 number_format）
-DATE_FIELDS = {"提出时间", "计划时间", "完成时间"}
+# 用 tuple 而非 set：date_columns 的输出顺序要稳定（便于 diff / 人工核对）
+DATE_FIELDS = ("提出时间", "计划时间", "完成时间")
 
 
 # ---------------- accounts ----------------
@@ -181,26 +183,22 @@ def cmd_sessions(args):
 
 
 # ---------------- workbook ----------------
-def cmd_workbook(args):
-    import openpyxl
-    from openpyxl.utils.exceptions import InvalidFileException
-    # 旧版 .xls/.xlt 二进制格式 openpyxl 不支持（.xlsx/.xlsm/.xltx 可以）
-    if args.workbook.lower().endswith((".xls", ".xlt")):
-        sys.exit(f"✗ {args.workbook} 是旧版格式，openpyxl 不支持。"
-                 "请先用 Excel/WPS 把工作簿「另存为 .xlsx」再探测。")
-    try:
-        wb = openpyxl.load_workbook(args.workbook)
-    except InvalidFileException as e:
-        sys.exit(f"✗ 无法以 .xlsx 解析 {args.workbook}（{e}）。"
-                 "若是旧版 .xls，请先另存为 .xlsx 再探测。")
-    names = wb.sheetnames
-    if args.sheet:
-        if args.sheet in names:
-            ws = wb[args.sheet]
+def analyze_workbook(wb, sheet_selector, label):
+    """从"任意可读工作簿"解析表头 → 列映射 + 末行 + 处理人候选。
+
+    wb 可为 openpyxl Workbook，也可为 common.GridWorkbook（云文档快照）。
+    两者只需提供 .sheetnames / __getitem__ /
+    子表的 .title / .max_row / .max_column / .cell(row=, column=)。
+    返回结果 dict（可直接 json 序列化）。
+    """
+    names = list(wb.sheetnames)
+    if sheet_selector:
+        if sheet_selector in names:
+            ws = wb[sheet_selector]
         else:
-            cand = [n for n in names if args.sheet in n]
+            cand = [n for n in names if sheet_selector in n]
             if not cand:
-                sys.exit(f"✗ 未找到包含「{args.sheet}」的工作表。可用的表：{', '.join(names)}")
+                sys.exit(f"✗ 未找到包含「{sheet_selector}」的工作表。可用的表：{', '.join(names)}")
             ws = wb[cand[0]]
     else:
         # 优先选数据最多的表（排除"首页"/"说明"之类）
@@ -286,8 +284,8 @@ def cmd_workbook(args):
 
     date_cols = [mapping[k] for k in DATE_FIELDS if k in mapping]
 
-    result = {
-        "workbook": args.workbook,
+    return {
+        "workbook": label,
         "sheets": names,
         "sheet_selected": ws.title,
         "header_row": header_row,
@@ -300,21 +298,49 @@ def cmd_workbook(args):
         "date_columns": date_cols,
         "handler_candidates": handler_candidates,
     }
+
+
+def cmd_workbook(args):
+    snap = getattr(args, "snapshot", None)
+    if snap:
+        from common import load_snapshot, workbook_from_snapshot
+        if not os.path.isfile(snap):
+            sys.exit(f"✗ 快照文件不存在：{snap}\n"
+                     "请先按 SKILL.md「WPS 通道」把 kdocs 读表返回存成 raw.json，"
+                     "再跑 `python scripts/sheet_snapshot.py build --raw ... --out ...`。")
+        wb = workbook_from_snapshot(load_snapshot(snap))
+        result = analyze_workbook(wb, args.sheet, snap)
+    else:
+        import openpyxl
+        from openpyxl.utils.exceptions import InvalidFileException
+        # 旧版 .xls/.xlt 二进制格式 openpyxl 不支持（.xlsx/.xlsm/.xltx 可以）
+        if args.workbook.lower().endswith((".xls", ".xlt")):
+            sys.exit(f"✗ {args.workbook} 是旧版格式，openpyxl 不支持。"
+                     "请先用 Excel/WPS 把工作簿「另存为 .xlsx」再探测。")
+        try:
+            wb = openpyxl.load_workbook(args.workbook)
+        except InvalidFileException as e:
+            sys.exit(f"✗ 无法以 .xlsx 解析 {args.workbook}（{e}）。"
+                     "若是旧版 .xls，请先另存为 .xlsx 再探测。")
+        result = analyze_workbook(wb, args.sheet, args.workbook)
+
     print(json.dumps(result, ensure_ascii=False, indent=2))
     if getattr(args, "json", False):
         return
-    print(f"\n[workbook] {os.path.basename(args.workbook)} / 子表「{ws.title}」 表头第{header_row}行")
+    mapping = result["column_mapping"]
+    print(f"\n[workbook] {os.path.basename(str(result['workbook']))} / "
+          f"子表「{result['sheet_selected']}」 表头第{result['header_row']}行")
     print("  列映射（按表头识别）：")
     for k, v in mapping.items():
         mark = " [日期列]" if k in DATE_FIELDS else ""
         print(f"    {v:<3} = {k}{mark}")
-    if unmatched_headers:
-        print(f"  未识别表头 {len(unmatched_headers)} 个（不影响写入）："
-              + "、".join(f"{u['col']}:{u['header']}" for u in unmatched_headers[:8]))
-    print(f"  末数据行 {last_row} → 追加起始行 {last_row + 1}")
-    if handler_candidates:
+    if result["unmatched_headers"]:
+        print(f"  未识别表头 {len(result['unmatched_headers'])} 个（不影响写入）："
+              + "、".join(f"{u['col']}:{u['header']}" for u in result["unmatched_headers"][:8]))
+    print(f"  末数据行 {result['last_data_row']} → 追加起始行 {result['next_append_row']}")
+    if result["handler_candidates"]:
         print("  处理人候选（自动推断）："
-              + "、".join(f"{h['value']}({h['count']}次)" for h in handler_candidates))
+              + "、".join(f"{h['value']}({h['count']}次)" for h in result["handler_candidates"]))
 
 
 def main():
@@ -332,7 +358,9 @@ def main():
     p2.add_argument("--json", action="store_true",
                     help="只输出 JSON（供 pipeline/脚本调用，不打印人类摘要）")
     p3 = sub.add_parser("workbook")
-    p3.add_argument("--workbook", required=True)
+    src = p3.add_mutually_exclusive_group(required=True)
+    src.add_argument("--workbook", help="本地 .xlsx 路径（本地通道）")
+    src.add_argument("--snapshot", help="云文档快照 json（WPS 通道，见 sheet_snapshot.py）")
     p3.add_argument("--sheet", default=None)
     p3.add_argument("--json", action="store_true",
                     help="只输出 JSON（供 pipeline/脚本调用，不打印人类摘要）")
