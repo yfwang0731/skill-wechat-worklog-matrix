@@ -25,16 +25,14 @@ def check(name, fn):
         print(f"  [FAIL] {name}: {type(e).__name__}: {e}")
 
 
+MODULES = ["common", "probe", "decrypt", "export_conversations", "split_for_agents",
+           "build_matrix_rows", "position_reuse", "sheet_snapshot", "to_kdocs_payload"]
+
+
 def smoke_imports():
-    import common            # noqa: F401
-    import probe             # noqa: F401
-    import decrypt           # noqa: F401
-    import export_conversations  # noqa: F401
-    import split_for_agents  # noqa: F401
-    import build_matrix_rows  # noqa: F401
-    import position_reuse    # noqa: F401  (openpyxl 已改为惰性导入，无依赖也能 import)
-    import sheet_snapshot    # noqa: F401
-    import to_kdocs_payload  # noqa: F401
+    import importlib
+    for m in MODULES:
+        importlib.import_module(m)
 
 
 def smoke_common():
@@ -180,6 +178,83 @@ def smoke_probe_analyze():
     assert res["handler_candidates"][0]["value"] == "李四", res["handler_candidates"]
 
 
+def smoke_message_decoding():
+    """消息正文解码：ZSTD 压缩 / appmsg 引用 / 系统消息 归一化。"""
+    from export_conversations import (render_content, decode_payload, appmsg_summary,
+                                      UNDECODED_TAG, BINARY_TAG, ZSTD_MAGIC)
+    # zstd 帧但解不开（测试环境无 zstandard 或帧非法）→ 明确标记，绝不吐乱码
+    bad = ZSTD_MAGIC + b"\x00" * 16
+    assert render_content(bad, 4, 1) == UNDECODED_TAG, render_content(bad, 4, 1)
+    # 纯二进制且高乱码率 → 标记
+    assert decode_payload(b"\xff\xfe\x00\x01" * 20, 0)[1] == BINARY_TAG
+    # 明文直通
+    assert render_content("你好", 0, 1) == "你好"
+    # 媒体占位（优先级高于内容）
+    assert render_content("x", 0, 3) == "[图片]"
+    assert render_content("x", 0, 34) == "[语音]"
+    # appmsg：提取标题 + 引用正文（对方用「引用回复」提需求时正文在引用里）
+    xml = ('<?xml version="1.0"?><msg><appmsg><title>记得帮忙改</title>'
+           '<refermsg><content>帮忙按船公司对比导入的 差额逻辑改吧</content></refermsg>'
+           '</appmsg></msg>')
+    got = render_content(xml, 0, 49)
+    assert got.startswith("[链接/文件] ") and "记得帮忙改" in got and "差额逻辑改吧" in got, got
+    assert appmsg_summary("<msg></msg>") == ""
+    # 系统消息 / 撤回 / 通话
+    assert render_content('<sysmsg type="revokemsg"><content>x</content></sysmsg>', 0, 10000) == "[撤回了一条消息]"
+    assert render_content('<sysmsg type="roomtoolstips">x</sysmsg>', 0, 10000) == "[系统消息]"
+    assert render_content('<voipmsg><msg>通话</msg></voipmsg>', 0, 50) == "[通话]"
+    # 高位 local_type 要按 32 位掩码还原
+    assert render_content("x", 0, 244813135921) == "x", "掩码后应等于 49(appmsg) 且正文直通"
+    assert render_content(xml, 0, (49 + (57 << 32))) == got
+
+
+def smoke_guards_and_robustness():
+    """真跑暴露的守卫：空映射不给追加行、岗位剥离不剥空、空 N 键不丢、null 日期不崩。"""
+    import json as _json
+    import tempfile
+    from common import GridSheet, GridWorkbook
+    from probe import analyze_workbook
+    from build_matrix_rows import norm_o, load_agents, flag_dups
+
+    # C1: 表头全部识别失败 → 不能给 next_append_row（否则会覆盖第 2 行）
+    wb = GridWorkbook([GridSheet("运维", [["甲", "乙"], ["1", "2"], ["3", "4"]])])
+    res = analyze_workbook(wb, None, "snap.json")
+    assert res["column_mapping"] == {}
+    assert res["last_data_row"] is None and res["next_append_row"] is None, res
+    assert res["warnings"], "空映射必须给出 warning"
+    # 有映射时仍正常
+    wb2 = GridWorkbook([GridSheet("运维", [["需求描述", "提出人"], ["a", "张三"], ["b", "李四"]])])
+    r2 = analyze_workbook(wb2, None, "snap.json")
+    assert r2["next_append_row"] == 4, r2["next_append_row"]
+
+    # C9: 无映射时扫描全部列（不再只扫前 27 列）
+    wide = GridSheet("w", [[""] * 40 + ["x"]])
+    from common import next_append_row_ws
+    assert next_append_row_ws(wide, None) == 2, next_append_row_ws(wide, None)
+
+    # C10: 姓名恰好等于岗位词时不剥空
+    cfg = {"post_words": ["客服", "财务"]}
+    assert norm_o("客服", cfg) == ("客服", ""), norm_o("客服", cfg)
+    assert norm_o("张三客服", cfg) == ("张三", "客服")
+
+    # C6/C7: ask_date=null 不崩；N 键存在但为空时不丢剥离结果
+    d = tempfile.mkdtemp(prefix="wm_smoke_")
+    _json.dump([{"O": "王五客服", "N": "", "L": "改费", "ask_date": "2026-05-14", "chat": "A"},
+                {"O": "李四", "L": "导数据", "ask_date": None, "chat": "B"}],
+               open(os.path.join(d, "agent_1.json"), "w", encoding="utf-8"), ensure_ascii=False)
+    rows = load_agents(d, cfg)
+    assert len(rows) == 2
+    by_o = {r["O"]: r for r in rows}
+    assert by_o["王五"]["N"] == "客服", by_o["王五"]
+    assert rows[0]["ask_date"] is None or isinstance(rows[0]["ask_date"], str)
+
+    # C8: 日期不可解析时不崩、不误判
+    flag_dups([{"O": "a", "L": "改个费用", "ask_date": "坏日期", "chat": "A", "_i": 1},
+               {"O": "a", "L": "改个费用", "ask_date": "2026-05-14", "chat": "B", "_i": 2}], {})
+    import shutil
+    shutil.rmtree(d, ignore_errors=True)
+
+
 def smoke_build():
     from build_matrix_rows import norm_o, ids, QMAP
     cfg = {"people": {"counterparty_keyword": "李四"}, "post_words": ["财务", "客服"]}
@@ -210,9 +285,13 @@ def smoke_position_reuse_openpyxl():
 def main():
     full = "--full" in sys.argv
     print("== import 冒烟 ==")
-    check("9 个模块 import", smoke_imports)
+    check(f"{len(MODULES)} 个模块 import", smoke_imports)
     print("== common 单测 ==")
     check("serial/col_index/col_letter", smoke_common)
+    print("== 消息正文解码（真机乱码根因）==")
+    check("ZSTD 降级/appmsg 引用/sysmsg 归一化", smoke_message_decoding)
+    print("== 守卫与稳健性（真跑暴露）==")
+    check("空映射不给追加行/剥离不剥空/null 日期不崩", smoke_guards_and_robustness)
     print("== 云文档快照抽象层 ==")
     check("稀疏->密集网格 / GridSheet 接口 / 追加行", smoke_snapshot_grid)
     check("raw.json 多形态识别", smoke_snapshot_raw_parse)

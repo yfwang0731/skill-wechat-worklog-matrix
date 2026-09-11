@@ -127,7 +127,7 @@ def next_append_row_ws(ws, mapping=None):
     """返回工作表下一个可追加行号（1-based）。
 
     mapping 为 column_mapping（逻辑列名->列字母）时，以"需求描述/提出时间/提出人"列
-    有无值判定数据行；否则退化为扫描前 27 列。
+    有无值判定数据行；否则扫描**全部已有列**（不再只扫前 27 列，宽表也能判准）。
     """
     probe_cols = []
     if mapping:
@@ -136,7 +136,7 @@ def next_append_row_ws(ws, mapping=None):
             if l:
                 probe_cols.append(col_index(l) + 1)
     if not probe_cols:
-        probe_cols = list(range(1, 28))
+        probe_cols = list(range(1, max(1, ws.max_column or 0) + 1))
     last = 1
     for r in range(1, ws.max_row + 1):
         if any(ws.cell(row=r, column=c).value not in (None, "") for c in probe_cols):

@@ -15,6 +15,10 @@
   - `kdocs` —— **WPS 云文档**，只需给文档链接/名字，agent 直接读写云文档（金山文档连接器），不用把文件下载到本地。
   两条通道共用同一套列映射、判定规则与 payload 结构，只换 I/O。
 - **列位置靠表头识别**：`probe` 读取目标表格表头自动生成「表头 → 列」映射，换模板也能用，不写死 A~AA。
+- **消息正文解码到位**：微信把长文本/图片/引用/合并转发等以 ZSTD 压缩存在 `message_content`，
+  装 `zstandard` 可完整还原（缺库时给出明确标记而非乱码）；`[链接/文件]` 会提取 `<title>` 与
+  **引用原文**，对方用「引用回复」提需求时不再丢内容。
+- **绝不静默改写已有数据**：拿不到「追加起始行」就报错退出，不兜底、不猜（真机踩出过三条这类路径）。
 - **人在回路**：先探测一次性确认 → 子代理判定结果必须交人工裁决（删行/合并）后才回填。
 - **单元格只写业务结果**：备注等列一律不写判定依据/分析过程。
 - **合规边界**：解密使用第三方灰色工具 wcdb-key-tool（只读本机、数据不出电脑、使用前向用户确认）；聊天明文与探测中间产物全部留在本地并被 `.gitignore` 排除。
@@ -23,6 +27,7 @@
 
 ```bash
 # 0) 环境依赖
+pip install zstandard           # 建议：解压 ZSTD 压缩的消息正文（缺库会漏需求）
 pip install openpyxl            # 仅本地表格通道需要；云文档通道不需要
 #    本地通道：表格须为 .xlsx（.xlsm 也支持）；旧版 .xls/.xlt 会被 probe 拒绝，请先另存为 .xlsx
 #    云文档通道：在 WorkBuddy 连接器管理里连接「金山文档」
@@ -39,14 +44,17 @@ python pipeline.py probe --snapshot <output.dir>/sheet_snapshot.json --dump prob
 # 4) 执行：解密 → 导出会话转录 → 分包 → 派发子代理 LLM 识别 → 预览裁决 → 生成 payload → 回填
 python pipeline.py run
 python scripts/build_matrix_rows.py preview --src <output.dir>/transcripts/_out --out merged_preview.csv
-python scripts/build_matrix_rows.py final --preview merged_preview.csv --remove "..." --merge "a:b"
-python scripts/position_reuse.py --workbook <xlsx> --out payload_n.json  # 默认只填空缺，--override 才覆盖
+#    预览交用户裁决（删行/合并）后再 final；起始行必须给来源之一（workbook/snapshot/start-row-excel）
+python scripts/build_matrix_rows.py final --preview merged_preview.csv --remove "..." --merge "a:b" \
+        --start-row-excel <起始行>
+python scripts/position_reuse.py --workbook <xlsx> --out payload_n.json  # 默认只填空缺、只动新增行
 #    （<output.dir>/transcripts/_out 即 run 产物目录，output.dir 默认 ./wechat_pilot）
-#    （派发判定子代理前，按 config 的 rules.*/people.my_identifiers 渲染 references/agent-prompt-zh.txt，勿发裸模板）
+#    （派发判定子代理前，按 config 的 rules.*/people.* 渲染 references/agent-prompt-zh.txt，勿发裸模板）
 #    本地通道：用 tencent-local-office-edit 把 payload*.json 回填到目标子表
 #    云文档通道：position_reuse 改用 --snapshot；再
 python scripts/to_kdocs_payload.py --payload payload.json --out kdocs_update.json
-#    然后 agent 调 sheet.update_range_data 写回，并 sheet.get_range_data 回读核对
+#    然后 agent 逐批调 sheet.update_range_data（calls 数组），并 sheet.get_range_data 回读核对
+#    注意：岗位复用要作用于"本批新行"时，须先回填 payload.json 再跑 position_reuse（详见 SKILL.md）
 ```
 
 解密工具 wcdb-key-tool（第三方，不在本仓库内）：
@@ -67,6 +75,26 @@ git clone https://github.com/TANGandXUE/wcdb-key-tool scripts/tools/wcdb-key-too
 | 额外依赖 | openpyxl | 金山文档连接器 |
 
 > 云文档写入**用 `sheet.update_range_data`（幂等），不要用 `sheet.add_row`**（后者非幂等，重试会插多行脏数据）；写后必须回读核对。
+
+## 真机验证过的坑（摘要）
+
+2026-09 在一台 Windows + 微信 4.1 + WPS 云文档上实跑，暴露并已修的问题（详见 `SKILL.md` 与
+`references/workflow-notes.md`）：
+
+| # | 坑 | 处理 |
+|---|---|---|
+| 1 | 工作表参数名是 `worksheet_id` 而非 `sheetId` | 全量统一，并写入 smoke 断言防回归 |
+| 2 | `update_range_data` 单次 `rangeData` **上限 100 条** | `to_kdocs_payload.py` 自动分批，输出 `calls` |
+| 3 | 每条 `formula` op 只能写一个值 → op 数≈值单元格数 | 属接口设计，文档说明是正常量级，别想着合并收敛 |
+| 4 | 日期格式同列老行 `yyyy/m/d`、新行 `yyyy-mm-dd` 并存 | **以最新行为准**，写 `excel.kdocs.date_numfmt` |
+| 5 | 消息正文是 ZSTD 压缩，早期当文本解码 → 整段乱码 | 解压 + 缺库给明确标记；不再吐乱码 |
+| 6 | `lt=49` 的引用回复，正文在 `<refermsg>` 里 | 提取 title + 引用正文，不再只写 `[链接/文件]` |
+| 7 | `decrypt.py` 未传 `--db-dir`，多账户可能取错账号 | 显式传 `--db-dir` |
+| 8 | 用户点名的群 9/8 后 0 条消息（两周前才发言） | 先查活跃度，如实报告并让用户决定是否扩窗 |
+| 9 | `position_reuse` 默认扫整表 → 静默回填历史空缺格 | 默认只动新增行，历史只读；显式 `--start-row` 才越界 |
+
+**共性教训**：其中三条（空表头映射、`final` 起始行兜底为 2、`position_reuse` 默认扫整表）都会在
+**没有告警**的情况下改动「不该动的单元格」。现在的原则是 **拿不到追加起始行就报错退出**。
 
 ## 目录结构
 

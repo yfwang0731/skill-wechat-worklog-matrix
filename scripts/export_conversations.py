@@ -4,6 +4,13 @@
 **导出哪些会话由 config.json 决定**（scope.sessions 显式清单 或 scope.name_filter 关键字筛选），
 不再内置任何具体客户/群。所有路径自动识别或由 config 提供。
 
+正文解码（真机踩坑，重要）：
+- `WCDB_CT_message_content` 决定 `message_content` 形态：`0`=明文 str，`4`=**ZSTD 压缩 bytes**
+  （魔数 28 B5 2F FD）。图片/引用/合并转发/通话等富媒体都是压缩的，长文本也可能压缩。
+- 装 `pip install zstandard` 可完整还原；缺库时输出**明确标记**而非乱码（早期版本吐乱码导致整段会话不可读）。
+- `lt=49` appmsg 会提取 `<title>` 与 `<refermsg><content>`（对方用「引用回复」提需求时，正文在引用里）。
+- 系统消息（`sysmsg`/撤回）归一化为 `[系统消息]`/`[撤回了一条消息]`，不再把 XML 灌进转录。
+
 用法：
   python export_conversations.py                              # 按 config.json 导出
   python export_conversations.py --since 2026-08-01           # 增量：只导该日期之后
@@ -22,6 +29,122 @@ from common import md5hex, load_config
 
 TZ = timezone(timedelta(hours=8))
 SHARDS = ["message_2.db", "message_1.db", "message_3.db"]   # m2 最老 → m3 最新
+
+# ---------------- 消息正文解码 ----------------
+# 真机实测（微信 4.1 / 2026-09）：同一张 Msg_* 表里，WCDB_CT_message_content 决定
+# message_content 的存储形态：
+#   0 → str，明文
+#   4 → bytes，**ZSTD 压缩帧**（魔数 28 B5 2F FD）。图片/引用/合并转发/通话等富媒体都是这种，
+#       长文本消息也可能被压缩。
+# 早期版本把 ct=4 的 bytes 直接 utf-8 errors="replace" 解成文本 → 整段乱码，会话不可读、需求漏判。
+# 现在：能解压就解压；解压库缺失/失败则给**明确标记**，绝不吐乱码。
+ZSTD_MAGIC = b"\x28\xb5\x2f\xfd"
+UNDECODED_TAG = "[压缩内容未解码: 需 pip install zstandard]"
+BINARY_TAG = "[二进制内容无法解码]"
+MAX_TEXT = 800          # 单条正文上限，防止合并转发记录把转录撑爆
+
+
+def _zstd_decompress(blob):
+    """尝试解压 zstd；库缺失或不支持返回 None（不抛异常）。"""
+    for mod in ("zstandard", "pyzstd", "compression.zstd"):
+        try:
+            if mod == "zstandard":
+                import zstandard as z
+                return z.ZstdDecompressor().decompress(blob, max_output_size=1 << 24)
+            if mod == "pyzstd":
+                import pyzstd as z
+                return z.decompress(blob)
+            from compression import zstd as z
+            return z.decompress(blob)
+        except ImportError:
+            continue
+        except Exception:
+            return None
+    return None
+
+
+def decode_payload(raw, ct_type=None):
+    """把 message_content / compress_content 解成可读文本。
+
+    返回 (text, tag)：tag 非空表示"未能解码"，text 为空时用它当占位。
+    """
+    if raw is None:
+        return "", ""
+    if isinstance(raw, (bytes, bytearray)):
+        blob = bytes(raw)
+        if ct_type == 4 or blob[:4] == ZSTD_MAGIC:
+            out = _zstd_decompress(blob)
+            if out is None:
+                return "", UNDECODED_TAG
+            try:
+                return out.decode("utf-8", "replace"), ""
+            except Exception:
+                return "", BINARY_TAG
+        txt = blob.decode("utf-8", "replace")
+        # 乱码占比过高 → 判定为二进制，不往转录里倒垃圾
+        if txt and txt.count("\ufffd") / max(1, len(txt)) > 0.3:
+            return "", BINARY_TAG
+        return txt, ""
+    return str(raw), ""
+
+
+def _xml_field(xml, tag, limit=MAX_TEXT):
+    """取 <tag>...</tag> 的内容（第一个匹配），去掉内层标签残留。"""
+    m = re.search(rf"<{tag}>(.*?)</{tag}>", xml or "", re.S)
+    if not m:
+        return ""
+    v = re.sub(r"\s+", " ", m.group(1)).strip()
+    return v[:limit]
+
+
+def appmsg_summary(xml):
+    """从 appmsg XML 提取可读摘要：标题 + 描述 + **引用消息的原文**。
+
+    真机案例：对方用「引用回复」提需求时，正文在 <refermsg><content>，早期版本只输出
+    `[链接/文件]`，导致需求内容整条丢失（本项目就漏过一条）。
+    """
+    parts = []
+    title = _xml_field(xml, "title", 200)
+    if title:
+        parts.append(title)
+    ref = re.search(r"<refermsg>(.*?)</refermsg>", xml or "", re.S)
+    if ref:
+        c = _xml_field(ref.group(1), "content", 400)
+        if c and c not in parts:
+            parts.append(f"引用: {c}")
+    des = _xml_field(xml, "des", 400)
+    if des and all(des not in p for p in parts):
+        parts.append(des)
+    return " / ".join(parts)
+
+
+def render_content(raw, ct_type, local_type):
+    """消息正文 → 转录里的一行文本（含富媒体占位与系统消息归一化）。"""
+    text, tag = decode_payload(raw, ct_type)
+    t = local_type
+    if isinstance(t, int) and t >= (1 << 31):
+        t = t & 0xFFFFFFFF
+    if t == 3:
+        return "[图片]"
+    if t == 34:
+        return "[语音]"
+    if t == 43:
+        return "[视频]"
+    if t == 47:
+        return "[表情]"
+    if tag:
+        return tag
+    s = text.strip()
+    if "<sysmsg" in s or "revokemsg" in s:
+        return "[撤回了一条消息]" if "revokemsg" in s else "[系统消息]"
+    if "<voipmsg" in s:
+        return "[通话]"
+    if "<appmsg" in s:
+        summary = appmsg_summary(s)
+        return f"[链接/文件] {summary}" if summary else "[链接/文件]"
+    if t == 49 and not s:
+        return "[链接/文件]"
+    return s[:MAX_TEXT]
 
 
 def main():
@@ -100,20 +223,30 @@ def main():
 
     # ===== 决定要导出哪些会话 =====
     if sessions:
-        pick = []
+        pick, unmatched = [], []
         for s in sessions:
             if s in disp2 or "@chatroom" in s:
                 pick.append((s, disp2.get(s, s)))
-            else:
-                for d, us in disp_all.items():
-                    if d == s:
-                        bu, bn = us[0], -1
-                        for u in us:
-                            n = count_msgs(u)
-                            if n > bn:
-                                bu, bn = u, n
-                        pick.append((bu, d))
+                continue
+            hit = False
+            for d, us in disp_all.items():
+                if d == s:
+                    bu, bn = us[0], -1
+                    for u in us:
+                        n = count_msgs(u)
+                        if n > bn:
+                            bu, bn = u, n
+                    pick.append((bu, d))
+                    hit = True
+                    break
+            if not hit:
+                unmatched.append(s)
         print(f"[export] 按 config 指定导出 {len(pick)} 个会话")
+        if unmatched:
+            # 早期版本会静默丢弃，用户以为导全了其实少了会话
+            print(f"  ⚠ config 指定的 {len(unmatched)} 个会话没匹配到联系人（已跳过）："
+                  + "、".join(unmatched[:10])
+                  + "；请核对拼写，或先跑 probe.py sessions 看真实标识。")
     else:
         pick = []
         if name_filter:
@@ -139,6 +272,7 @@ def main():
               "或先跑 probe.py sessions 看看有哪些会话。")
         return
 
+    stats = {"undecoded": 0}
     for username, dname in pick:
         tb = "Msg_" + md5hex(username)
         out_rows = []
@@ -166,32 +300,15 @@ def main():
             sql += "ORDER BY create_time"
             rows = c2.execute(sql, params).fetchall()
             for sid, ct, lt, content, ct_type, ccomp in rows:
-                # ct_type = WCDB_CT_message_content：疑似"内容类型"标志列（数值型），
-                # 不作为正文处理；正文兜底仅取 compress_content（空正文时）。
-                if isinstance(content, bytes):
-                    content = content.decode("utf-8", "replace")
-                if not str(content or "").strip() and isinstance(ccomp, bytes):
-                    try:
-                        ccomp = ccomp.decode("utf-8", "replace")
-                        if ccomp.strip():
-                            content = ccomp
-                    except Exception:
-                        pass
-                content = str(content or "")
+                text = render_content(content, ct_type, lt)
+                if text in (UNDECODED_TAG, BINARY_TAG):
+                    stats["undecoded"] += 1
+                elif not text.strip() and str(ccomp or "").strip():
+                    # 正文为空时才用 compress_content 兜底（同样走解码器）
+                    text = render_content(ccomp, ct_type, lt)
                 uname = id2name.get(sid, "")
                 sender_disp = disp2.get(uname) or uname or "(未知)"
-                t = (lt & 0xFFFFFFFF) if isinstance(lt, int) and lt >= (1 << 31) else lt
-                if t == 3:
-                    content = "[图片]"
-                elif t == 34:
-                    content = "[语音]"
-                elif t == 43:
-                    content = "[视频]"
-                elif t == 47:
-                    content = "[表情]"
-                elif t == 49:
-                    content = "[链接/文件]"
-                out_rows.append((ct, sender_disp, content))
+                out_rows.append((ct, sender_disp, text))
             cc.close()
         out_rows.sort(key=lambda r: r[0])
         # 文件名 = 显示名前 40 字符 + wxid 短哈希（同名/超长截断后仍唯一，避免互相覆盖）
@@ -202,6 +319,9 @@ def main():
                 dt = datetime.fromtimestamp(ct, TZ)
                 f.write(f"{dt.strftime('%Y-%m-%d %H:%M')} | {sd} | {content.replace(chr(10),' / ').strip()}\n")
         print(f"{len(out_rows):>4} msgs -> {fname}")
+    if stats["undecoded"]:
+        print(f"\n⚠ {stats['undecoded']} 条消息正文未能解码（多为 ZSTD 压缩的富媒体/长文本）。"
+              f"安装解码库可恢复：pip install zstandard")
     print("done")
 
 

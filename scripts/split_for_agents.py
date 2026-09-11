@@ -48,12 +48,10 @@ def main():
         buckets[lightest].append(f)
         loads[lightest] += file_weight(f)
 
-    manifest = []
     for i, b in enumerate(buckets, 1):
         lst = os.path.join(out, f"agent_{i}.txt")
         with open(lst, "w", encoding="utf-8") as fh:
             fh.write("\n".join(os.path.abspath(x) for x in b))
-        manifest.append((i, len(b), lst))
         print(f"agent_{i}: {len(b)} 个文件 / 约 {loads[i-1]//1024} KB -> {lst}")
 
     print(f"\n共 {len(files)} 个转录文件，按大小均衡分成 {n} 路。"
