@@ -154,6 +154,7 @@ def smoke_kdocs_payload():
     assert [r[2] for r in risky] == ["0012", "=A1", "12345678901234567", "+86"], risky
     assert find_risky_text([]) == []
     assert risky_reason("46274") is None          # 日期序列号必须保持"可被转成数字"
+    assert risky_reason("=") is None and risky_reason("-") is None   # 单字符真机实测不改写
     assert escape_risky_text("0012") == "'0012"
     assert escape_risky_text("商务经理") == "商务经理"
     assert escape_risky_text("46274") == "46274"
