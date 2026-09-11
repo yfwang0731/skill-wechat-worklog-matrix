@@ -25,7 +25,7 @@
 
 ## 安装
 
-本技能是 WorkBuddy 的 skill，**不需要 Release** —— 下载或 clone 到技能目录即可：
+本技能是 WorkBuddy 的 skill，装到技能目录即可被识别：
 
 ```bash
 # 方式 A：clone 到用户级技能目录（所有项目都能用）
