@@ -115,6 +115,17 @@ def appmsg_summary(xml):
     des = _xml_field(xml, "des", 400)
     if des and all(des not in p for p in parts):
         parts.append(des)
+    if not parts:
+        # 兜底：既无 title/des、也不是引用回复的 appmsg，正文可能在**外层的** <content>，
+        # 或者只有 <url>。以前这些一律只剩 `[链接/文件]`，纯文本型 appmsg 的需求会整条丢掉。
+        # 先把 refermsg 摘掉（上面已处理过），避免把引用正文重复算一次；
+        # 只取有语义的字段，不做"去标签取全文"——那会把 appid/fromusername 之类 ID 混进来。
+        outer = re.sub(r"<refermsg>.*?</refermsg>", "", xml or "", flags=re.S)
+        for tag, limit in (("content", 400), ("url", 300)):
+            v = _xml_field(outer, tag, limit)
+            if v:
+                parts.append(v)
+                break
     return " / ".join(parts)
 
 

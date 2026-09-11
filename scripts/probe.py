@@ -212,13 +212,30 @@ def analyze_workbook(wb, sheet_selector, label):
                 best, best_n = n, cnt
         ws = wb[best] if best else wb[names[0]]
 
-    # 找表头行：取前 5 行中非空单元格最多的一行
-    header_row, header_cells = 1, 0
+    # 找表头行：前 5 行里取「命中内置表头别名数最多」的一行，非空单元格数作次级判据。
+    # 只按"非空最多"在**很宽的表**上会被数据行骗过（数据行的需求描述/备注往往更长更满），
+    # 而真表头一行的别名命中数远高于任何数据行，所以把它当主判据。
+    def _alias_hits(r):
+        n = 0
+        for i in range(1, ws.max_column + 1):
+            v = ws.cell(row=r, column=i).value
+            if v in (None, ""):
+                continue
+            s = str(v).strip()
+            if any(len(al) >= 2 and al in s
+                   for aliases in COLUMN_ALIASES.values() for al in aliases):
+                n += 1
+        return n
+
+    def _filled(r):
+        return sum(1 for i in range(1, ws.max_column + 1)
+                   if ws.cell(row=r, column=i).value not in (None, ""))
+
+    header_row, best_key = 1, (-1, -1)
     for r in range(1, min(6, ws.max_row + 1)):
-        c = sum(1 for i in range(1, ws.max_column + 1)
-                if ws.cell(row=r, column=i).value not in (None, ""))
-        if c > header_cells:
-            header_row, header_cells = r, c
+        key = (_alias_hits(r), _filled(r))
+        if key > best_key:      # 严格大于 → 并列时取更靠上的行（表头通常在第 1 行）
+            header_row, best_key = r, key
 
     headers = {}
     for i in range(1, ws.max_column + 1):
