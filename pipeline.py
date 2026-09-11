@@ -187,17 +187,22 @@ def cmd_run(args):
     print("③ 用户确认后生成最终行 + 回填 payload（**岗位复用已内置在 final**，一轮写入）：")
     print(f"   python scripts/build_matrix_rows.py final --preview {outdir}/merged_preview.csv "
           f'--remove "<删行序号>" --merge "<a:b>,..."')
+    print("   ⚠ **必须再给一个表格来源**，否则报错退出（不兜底、不猜）：")
     if send == "kdocs":
-        print("   表头来自云文档快照时追加： --snapshot <output.dir>/sheet_snapshot.json")
-        print("   需要补历史岗位时追加： --history <history_positions.json>"
+        print("     --snapshot <output.dir>/sheet_snapshot.json（云文档：起始行取自快照）")
+        print("     需要补历史岗位时追加： --history <history_positions.json>"
               "（云文档读历史列太贵，见 SKILL.md「真机验证过的坑」第 10 条）")
-    print("   本地通道会自动读工作簿历史补岗位；无表格来源时会告警跳过，不静默。")
-    print("④ 可选·事后补跑（默认从表格当前内容取新行；--new-rows 从 CSV 取，不要求已落表）：")
+    else:
+        print("     --workbook <xlsx>（本地：一次读表同时算起始行与读历史岗位）"
+              "　或 --start-row-excel <行号>")
+    print("④ 可选·事后补跑（**必须说明哪些行是本批新行**，否则 position_reuse 直接报错）：")
     if send == "kdocs":
         print("   python scripts/position_reuse.py --snapshot <output.dir>/sheet_snapshot.json "
-              "--out payload_n.json")
+              f"--new-rows {outdir}/final_rows.csv --out payload_n.json")
     else:
-        print("   python scripts/position_reuse.py --workbook <xlsx> --out payload_n.json")
+        print("   python scripts/position_reuse.py --workbook <xlsx> "
+              f"--new-rows {outdir}/final_rows.csv --out payload_n.json")
+    print("   （也可 --start-row <本批首行号>；两者都不给会报错，见 SKILL.md「岗位复用」）")
     if send == "kdocs":
         print("⑤ 生成写入请求并回填到 WPS 云文档：")
         print("   python scripts/to_kdocs_payload.py --payload payload.json --out kdocs_update.json")
