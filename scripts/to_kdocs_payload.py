@@ -12,17 +12,21 @@ add_row 非幂等（重复调用会插多行），网络重试一次就多一行
   B. 简化格式
      {"values":[{"row":0,"col":11,"value":"x"}]}
 
-输出（可直接作为 sheet.update_range_data 的入参）：
-  {"file_id":"...","sheetId":3,"rangeData":[
+输出（**可直接作为 sheet.update_range_data 的 arguments**）：
+  {"file_id":"...","worksheet_id":3,"rangeData":[
      {"opType":"formula","rowFrom":0,"rowTo":0,"colFrom":11,"colTo":11,"formula":"x"},
-     {"opType":"format","rowFrom":0,"rowTo":0,"colFrom":12,"colTo":12,"xf":{"numfmt":"yyyy-mm-dd"}}]}
+     {"opType":"format","rowFrom":0,"rowTo":0,"colFrom":12,"colTo":12,"xf":{"numfmt":"yyyy/m/d"}}]}
+
+> 接口要点（2026-09 实测 kdocs 连接器 schema）：工作表参数名是 **worksheet_id**（不是 sheetId）；
+> 选区坐标字段是 camelCase 的 rowFrom/rowTo/colFrom/colTo + opType；日期格式走 `xf.numfmt`。
+> 写入后必须 `sheet.get_range_data` 回读核对，不能只信 `code: 0`。
 
 用法：
   python to_kdocs_payload.py --payload payload.json --out kdocs_update.json
-        [--file-id X] [--sheet-id N] [--date-cols "M,V,W"] [--date-numfmt yyyy-mm-dd]
+        [--file-id X] [--worksheet-id N] [--date-cols "M,V,W"] [--date-numfmt yyyy/m/d]
         [--no-date-format] [--mode values|rangeData]
 
-file_id / sheetId / date_columns 缺省时从 config.json（excel.kdocs / excel.date_columns）读取。
+file_id / worksheet_id / date_columns 缺省时从 config.json（excel.kdocs / excel.date_columns）读取。
 """
 import os
 import sys
@@ -70,7 +74,7 @@ def normalize_values(payload):
     return out
 
 
-def build_range_data(cells, date_cols0=(), date_numfmt="yyyy-mm-dd", with_date_format=True):
+def build_range_data(cells, date_cols0=(), date_numfmt="yyyy/m/d", with_date_format=True):
     """cells -> rangeData：值用 formula op，日期列额外补 format op（按列合并连续行）。"""
     rd = [{"opType": "formula", "rowFrom": r, "rowTo": r, "colFrom": c, "colTo": c,
            "formula": v} for r, c, v in cells]
@@ -84,6 +88,13 @@ def build_range_data(cells, date_cols0=(), date_numfmt="yyyy-mm-dd", with_date_f
                 rd.append({"opType": "format", "rowFrom": r0, "rowTo": r1,
                            "colFrom": c, "colTo": c, "xf": {"numfmt": date_numfmt}})
     return rd
+
+
+def build_body(file_id, worksheet_id, range_data):
+    """组装成 sheet.update_range_data 的 arguments（工作表键名必须是 worksheet_id）。"""
+    return {"file_id": file_id if file_id else "<file_id>",
+            "worksheet_id": worksheet_id if worksheet_id is not None else "<worksheet_id>",
+            "rangeData": range_data}
 
 
 def _runs(sorted_rows):
@@ -108,10 +119,11 @@ def main():
     ap.add_argument("--payload", required=True, help="payload.json / payload_n.json")
     ap.add_argument("--out", default=None, help="输出文件；缺省打印到 stdout")
     ap.add_argument("--file-id", default=None)
-    ap.add_argument("--sheet-id", default=None)
+    ap.add_argument("--worksheet-id", "--sheet-id", dest="worksheet_id", default=None,
+                    help="工作表 id（kdocs 连接器参数名 worksheet_id）")
     ap.add_argument("--date-cols", default=None,
                     help="日期列字母，逗号分隔（如 M,V,W）；缺省读 config.excel.date_columns")
-    ap.add_argument("--date-numfmt", default=None, help="日期数字格式，默认 yyyy-mm-dd")
+    ap.add_argument("--date-numfmt", default=None, help="日期数字格式，默认 yyyy/m/d")
     ap.add_argument("--no-date-format", action="store_true",
                     help="不补 format op（仅写值）")
     ap.add_argument("--config", default=None)
@@ -123,8 +135,11 @@ def main():
     kdocs = excel_cfg.get("kdocs", {}) or {}
 
     file_id = args.file_id or kdocs.get("file_id")
-    sheet_id = args.sheet_id if args.sheet_id is not None else kdocs.get("sheet_id")
-    date_numfmt = args.date_numfmt or kdocs.get("date_numfmt") or "yyyy-mm-dd"
+    # 兼容旧键名 sheet_id
+    ws_id = args.worksheet_id
+    if ws_id is None:
+        ws_id = kdocs.get("worksheet_id", kdocs.get("sheet_id"))
+    date_numfmt = args.date_numfmt or kdocs.get("date_numfmt") or "yyyy/m/d"
 
     raw_date_cols = args.date_cols
     if raw_date_cols is None:
@@ -149,8 +164,7 @@ def main():
         print("[warn] payload 里没有可写入的非空单元格，输出空 rangeData。", file=sys.stderr)
     rd = build_range_data(cells, date_cols0, date_numfmt, not args.no_date_format)
 
-    body = {"file_id": file_id or "<file_id>", "sheetId": sheet_id if sheet_id is not None else "<sheetId>",
-            "rangeData": rd}
+    body = build_body(file_id, ws_id, rd)
     text = json.dumps(body, ensure_ascii=False, indent=2)
     if args.out:
         with open(args.out, "w", encoding="utf-8") as f:
@@ -166,9 +180,9 @@ def main():
             print(f"[kdocs] config: {cfg_path or '(未找到，缺省值已生效)'}")
         print("  下一步：agent 用 sheet.get_range_data 回读同一区域核对（不信任 code:0）；"
               "写入用 sheet.update_range_data，**不要用 sheet.add_row**（非幂等）。")
-        if not file_id or sheet_id is None:
-            print("  ⚠ file_id / sheetId 仍是占位符：请在 config.excel.kdocs 里补全，"
-                  "或改用 --file-id / --sheet-id 传入。")
+        if not file_id or ws_id is None:
+            print("  ⚠ file_id / worksheet_id 仍是占位符：请在 config.excel.kdocs 里补全，"
+                  "或改用 --file-id / --worksheet-id 传入。")
     else:
         print(text)
 

@@ -125,7 +125,8 @@ def smoke_snapshot_raw_parse():
 
 def smoke_kdocs_payload():
     """payload -> kdocs rangeData 转换（editor_sdk 格式 / 简化格式 / 日期列 numfmt）。"""
-    from to_kdocs_payload import normalize_values, build_range_data, _num_to_str, _runs
+    from to_kdocs_payload import (normalize_values, build_range_data, build_body,
+                                  _num_to_str, _runs)
     a = {"values": [{"row": 1, "col": 11, "value_type": "STRING", "string_value": "改费"},
                     {"row": 1, "col": 12, "value_type": "NUMBER", "number_value": 46156},
                     {"row": 1, "col": 13, "value_type": "STRING", "string_value": ""}]}
@@ -138,13 +139,18 @@ def smoke_kdocs_payload():
     rd = build_range_data(cells, date_cols0=[12])
     assert rd[0] == {"opType": "formula", "rowFrom": 1, "rowTo": 1, "colFrom": 11,
                      "colTo": 11, "formula": "改费"}, rd[0]
-    assert rd[-1]["opType"] == "format" and rd[-1]["xf"]["numfmt"] == "yyyy-mm-dd", rd
+    assert rd[-1]["opType"] == "format" and rd[-1]["xf"]["numfmt"] == "yyyy/m/d", rd
     # 同列连续行压成一段
     nhi = build_range_data([(0, 12, "1"), (1, 12, "2"), (2, 12, "3")], date_cols0=[12])
     fmts = [x for x in nhi if x["opType"] == "format"]
     assert len(fmts) == 1 and fmts[0]["rowFrom"] == 0 and fmts[0]["rowTo"] == 2, nhi
     # 不补格式时只返回值
     assert all(x["opType"] == "formula" for x in build_range_data(cells, [12], with_date_format=False))
+    # 关键契约：工作表键名必须是 worksheet_id（连接器参数名），不是 sheetId
+    body = build_body("F1", 3, rd)
+    assert set(body) == {"file_id", "worksheet_id", "rangeData"}, body.keys()
+    assert body["worksheet_id"] == 3 and "sheetId" not in body
+    assert build_body(None, None, [])["worksheet_id"] == "<worksheet_id>"
 
 
 def smoke_probe_analyze():

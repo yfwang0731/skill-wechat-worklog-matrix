@@ -1,0 +1,20 @@
+[
+  {
+    "id": 1,
+    "prompt": "帮我把微信里客户提的需求整理登记到需求跟踪矩阵，文件是 D:\\台账\\需求跟踪矩阵.xlsx",
+    "expected": "走 local 通道：先 probe（账户/会话/表头映射）→ 一次性确认账户+会话+时间范围+处理人 → 写 config.json → run 解密导出分包 → 派子代理判定 → 交人工裁决 → position_reuse → editor_sdk 回填。不擅自假设账户/会话/处理人。",
+    "channel": "local"
+  },
+  {
+    "id": 2,
+    "prompt": "直接改我 WPS 上那个需求跟踪表吧，链接给你 https://www.kdocs.cn/l/xxxx，不用本地文件了",
+    "expected": "走 kdocs 通道：解析 link_id → get_share_info 取 file_id/drive_id → get_sheets_info 取 sheetId → 两趟窄读（表头/关键列）→ sheet_snapshot build → probe --snapshot → … → to_kdocs_payload 生成 rangeData → sheet.update_range_data 写入并回读核对。不得使用非幂等的 sheet.add_row。",
+    "channel": "kdocs"
+  },
+  {
+    "id": 3,
+    "prompt": "根据最近的微信聊天记录更新一下那个需求台账",
+    "expected": "目标不明确（哪个账户/哪份表/时间范围都没有）：应先探测并把候选一次性呈现让用户确认，而不是自己挑一个账号或表就开始跑；也不应逐条追问。",
+    "channel": "ambiguous"
+  }
+]
