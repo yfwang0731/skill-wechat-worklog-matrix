@@ -17,7 +17,7 @@ import sqlite3
 import argparse
 from datetime import datetime, timezone, timedelta
 
-from common import md5hex, col_index, col_letter
+from common import md5hex, col_index, col_letter, last_data_row_ws
 
 TZ = timezone(timedelta(hours=8))
 
@@ -285,11 +285,9 @@ def analyze_workbook(wb, sheet_selector, label):
         warnings.append("未识别到任何列（表头名都不在内置别名表内）："
                         "next_append_row 不可用，禁止据此写入；请先核对表头行/表头名。")
     else:
-        last_row = header_row
-        mapped_cols = [col_index(l) + 1 for l in mapping.values()]
-        for r in range(header_row + 1, ws.max_row + 1):
-            if any(ws.cell(row=r, column=c).value not in (None, "") for c in mapped_cols):
-                last_row = r
+        # 与 final/position_reuse 共用同一判据（common.last_data_row_ws），
+        # 避免两处各写一套导致起始行分歧 → 静默覆盖尾行。
+        last_row = last_data_row_ws(ws, mapping, header_row)
     if missing:
         warnings.append("必需列未识别：" + "、".join(missing)
                         + "（写入前请确认表头名或改用 --sheet 指定子表）")

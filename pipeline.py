@@ -186,15 +186,17 @@ def cmd_run(args):
     print(f"   python scripts/build_matrix_rows.py preview --src {outdir} --out {outdir}/merged_preview.csv")
     print("③ 用户确认后生成最终行 + 回填 payload（**岗位复用已内置在 final**，一轮写入）：")
     print(f"   python scripts/build_matrix_rows.py final --preview {outdir}/merged_preview.csv "
-          f'--remove "<删行序号>" --merge "<a:b>,..."')
-    print("   ⚠ **必须再给一个表格来源**，否则报错退出（不兜底、不猜）：")
+          f'--remove "<删行序号>" --merge "<a:b>,..." \\')
     if send == "kdocs":
-        print("     --snapshot <output.dir>/sheet_snapshot.json（云文档：起始行取自快照）")
-        print("     需要补历史岗位时追加： --history <history_positions.json>"
+        print("        --snapshot <output.dir>/sheet_snapshot.json      # 表格来源（**必给**）")
+    else:
+        print("        --workbook <xlsx>      # 表格来源（**必给**；或改用 --start-row-excel <行号>）")
+    print("   ⚠ 表格来源是**必给参数**：不给会报错退出（不兜底、不猜，绝不静默从第 2 行写）。")
+    if send == "kdocs":
+        print("     需要补历史岗位时再追加： --history <history_positions.json>"
               "（云文档读历史列太贵，见 SKILL.md「真机验证过的坑」第 10 条）")
     else:
-        print("     --workbook <xlsx>（本地：一次读表同时算起始行与读历史岗位）"
-              "　或 --start-row-excel <行号>")
+        print("     本地通道会自动从同一个来源读历史区补岗位，无需额外参数。")
     print("④ 可选·事后补跑（**必须说明哪些行是本批新行**，否则 position_reuse 直接报错）：")
     if send == "kdocs":
         print("   python scripts/position_reuse.py --snapshot <output.dir>/sheet_snapshot.json "

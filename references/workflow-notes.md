@@ -50,6 +50,11 @@
 - **`mapping` 为空时必须拒绝给追加行号**：末数据行是靠"已映射列有值"判定的，
   空映射会让 `any()` 恒 False、末行停在第 1 行、`next_append_row` 变成 2 → 据此写入会**覆盖已有数据**。
   现在返回 `next_append_row: null` + warning，`build_matrix_rows final` 也会拒绝执行。
+- **「末数据行」只能有唯一判据**（`common.last_data_row_ws`，`probe` 与 `final`/`position_reuse` 共用）。
+  两处各写一套曾造成分歧：probe 用**全部映射列**、`next_append_row_ws` 只用
+  "需求描述/提出时间/提出人" 3 个探针列；尾部行若只在**别的**映射列（如 项目编号）有值，
+  `final` 就算出**更小**的起始行 → **静默覆盖**尾行（2026-09-11 实跑复现：probe=5 vs final=4）。
+  已抽成同一函数，并用 smoke 断言锁死"两处同值 + `header_row` 必须透传"。
 - `date_columns` 里的列以 **Excel 序列号**写入，并设日期格式（**以目标表最新行的 `numFormat` 为准**）。
 
 ## 判定规则（用户口径，可由 config.rules 开关）

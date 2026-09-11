@@ -174,6 +174,13 @@ python pipeline.py probe [--workbook <xlsx> | --snapshot <快照json>] \
 ### 第 3 步：写 config.json
 从 `config.example.json` 复制，填入确认结果（account / excel / people / scope / defaults / rules）。
 
+**`excel.column_mapping` 与 `excel.header_row` 不能靠手填**——把第 1 步探测②的输出直接粘过去：
+```bash
+python probe.py workbook --workbook <xlsx> --json        # 或 --snapshot <快照json> --json
+```
+取其 `column_mapping` / `header_row` 写入 `config.excel`。这两个键是 `build_matrix_rows final`
+的**必需输入**（缺 `column_mapping` 会拿不到列位、无法生成 payload），漏填是最常见的卡点。
+
 ### 第 4 步：执行
 ```bash
 python pipeline.py run                     # 解密 → 导出 → 分包（产物在 <output.dir>/transcripts/_out）
