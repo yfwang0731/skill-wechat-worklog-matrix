@@ -184,12 +184,15 @@ def cmd_run(args):
     print(f"   交给 {n} 个并行子代理，产出 JSON 写到 {outdir}/。")
     print("② 预览并交用户裁决删行/合并：")
     print(f"   python scripts/build_matrix_rows.py preview --src {outdir} --out {outdir}/merged_preview.csv")
-    print("③ 用户确认后生成最终行 + 回填 payload：")
+    print("③ 用户确认后生成最终行 + 回填 payload（**岗位复用已内置在 final**，一轮写入）：")
     print(f"   python scripts/build_matrix_rows.py final --preview {outdir}/merged_preview.csv "
           f'--remove "<删行序号>" --merge "<a:b>,..."')
     if send == "kdocs":
         print("   表头来自云文档快照时追加： --snapshot <output.dir>/sheet_snapshot.json")
-    print("④ 岗位列复用：")
+        print("   需要补历史岗位时追加： --history <history_positions.json>"
+              "（云文档读历史列太贵，见 SKILL.md「真机验证过的坑」第 10 条）")
+    print("   本地通道会自动读工作簿历史补岗位；无表格来源时会告警跳过，不静默。")
+    print("④ 可选·事后补跑（默认从表格当前内容取新行；--new-rows 从 CSV 取，不要求已落表）：")
     if send == "kdocs":
         print("   python scripts/position_reuse.py --snapshot <output.dir>/sheet_snapshot.json "
               "--out payload_n.json")

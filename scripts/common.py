@@ -297,6 +297,72 @@ def next_append_row_snapshot(snapshot_path, sheet_hint="运维", mapping=None):
     return next_append_row_ws(pick_sheet(wb, sheet_hint), mapping)
 
 
+# ---------------- 岗位列复用（final 与 position_reuse 共用这一套）----------------
+# 设计要点：读历史、填新行、行序传播三件事各只有一份实现，
+# 避免"final 内置"与"position_reuse 独立"两条路各写一套而逐渐走偏。
+
+def position_columns(mapping):
+    """从 column_mapping 解析 (提出人列, 岗位列)（1-based）。
+
+    缺映射时退回常见列位（提出人=O=15, 岗位=N=14）。返回 (col_person, col_post)。
+    """
+    mp = mapping or {}
+    col_person = col_index(mp["提出人"]) + 1 if mp.get("提出人") else 15
+    col_post = col_index(mp["提出人岗位"]) + 1 if mp.get("提出人岗位") else 14
+    return col_person, col_post
+
+
+def read_history_positions(sheet, header_row, end_row, col_person, col_post):
+    """读历史区的「提出人 -> 该人最近的非空岗位」。
+
+    **只读**：历史区永不修改，只作为新行的岗位来源。
+    区间为 [header_row+1, end_row]（1-based，含两端）；end_row 一般传「追加起始行-1」。
+
+    返回 (last_post, pairs)；pairs 是读到「人+岗位」成对的行数——为 0 时说明
+    表格来源没覆盖到这两列的数据区（快照常见），调用方应据此告警而不是静默补 0 条。
+    """
+    last_post = {}
+    pairs = 0
+    for r in range(int(header_row) + 1, int(end_row) + 1):
+        person = sheet.cell(row=r, column=col_person).value
+        if person is None or not str(person).strip():
+            continue
+        person = str(person).strip()
+        post = sheet.cell(row=r, column=col_post).value
+        if post is not None and str(post).strip():
+            last_post[person] = str(post).strip()
+            pairs += 1
+    return last_post, pairs
+
+
+def reuse_position_fill(new_rows, last_post, person_key="提出人", post_key="提出人岗位",
+                        override=False):
+    """把 last_post（人 -> 最近岗位）复用到 new_rows 的空岗位上，**原地修改** new_rows。
+
+    返回变更明细 [{"i": 行下标, "person": 人, "old": 原值, "new": 补的值}]。
+
+    语义（与早期 position_reuse 完全一致，只是挪到共用函数里）：
+      - 默认**只填空缺**；override=True 才允许把已有值改写成 last_post 里的值。
+      - 按行序推进：本批先出现的非空岗位会写回 last_post，供本批后续行使用，
+        因此"历史 + 本批"合起来就是整表从上到下的自然语义。
+      - last_post 会被原地更新（调用方若还要用需自己拷贝）。
+    """
+    changes = []
+    for i, r in enumerate(new_rows or []):
+        person = str(r.get(person_key) or "").strip()
+        if not person:
+            continue
+        cur = str(r.get(post_key) or "").strip()
+        hist = str(last_post.get(person) or "").strip()
+        if hist and ((not cur) or (override and cur != hist)):
+            changes.append({"i": i, "person": person, "old": cur, "new": hist})
+            r[post_key] = hist
+            cur = hist
+        if cur:
+            last_post[person] = cur
+    return changes
+
+
 if __name__ == "__main__":
     cfg, path = load_config()
     print("config:", path or "(未找到 config.json，请先从 config.example.json 复制)")
