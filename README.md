@@ -7,6 +7,8 @@
 
 不绑定任何具体客户、项目或人员——服务对象、项目、会话、处理人全部由使用者通过 `config.json` 配置。
 
+当前版本 [`v1.0.0`](https://github.com/yfwang0731/skill-wechat-worklog-matrix/releases/tag/v1.0.0)　·　变更历史见 [`CHANGELOG.md`](CHANGELOG.md)
+
 ## 特性
 
 - **配置驱动，零内置假设**：账户 / 表格 / 会话 / 时间范围 / 处理人全部由你选择；仓库内不出现任何真实账号、姓名、客户与项目标识。
