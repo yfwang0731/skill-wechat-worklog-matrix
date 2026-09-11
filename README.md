@@ -97,7 +97,7 @@ git clone https://github.com/TANGandXUE/wcdb-key-tool scripts/tools/wcdb-key-too
 | 10 | 云文档**没有便宜的历史读法**：`download_file` 需登录态（403）、`get_typed_value` 跳空单元格、`get_range_data`/`read_file` 每格带样式（≈450 B）、`find_range_data` 的 `filter` 未公开 | 云文档岗位复用改走 `--history`；拿不到就留空，别硬读整列 |
 | 11 | 岗位复用原需"先写一遍再补一遍"，两次写入之间行号可能错位 | **并进 `final`，一轮写入**；CSV 与写入内容永远一致 |
 | 12 | `position_reuse` 改成"自动取追加起始行"后**永远 0 条**（表格尾部还有空的带格式行时连提示都不打）= 静默无操作 | 默认模式**报错退出**，必须给 `--new-rows <final_rows.csv>` 或 `--start-row` |
-| 13 | 值一律以 `opType=formula` 写入 → `0012` 前导零 / `=A1` 等可能被表格引擎改写 | `to_kdocs_payload` **显式告警**并列出命中值（不改写值）；需原样保留时先把目标列设为「文本」格式 |
+| 13 | 值一律以 `opType=formula` 写入 → `0012`→数值 12、`=A1`→**被当真公式求值**、17 位数字丢精度、`+86`→86，全部**静默改写不报错**（真机实测） | `to_kdocs_payload` **默认自动转义**：前置单引号（引擎当文本标记消费掉，回读值不含引号，实测无损）+ 列出命中项；确需按公式写入才用 `--no-escape-risky-text` |
 
 **共性教训**：其中三条（空表头映射、`final` 起始行兜底为 2、`position_reuse` 默认扫整表）都会在
 **没有告警**的情况下改动「不该动的单元格」。现在的原则是 **拿不到追加起始行就报错退出**。

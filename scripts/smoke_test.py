@@ -145,14 +145,19 @@ def smoke_kdocs_payload():
     # 不补格式时只返回值
     assert all(x["opType"] == "formula" for x in build_range_data(cells, [12], with_date_format=False))
 
-    # D3: 会被表格引擎改写的纯文本必须能被检出（前导零 / = 开头 / 超长数字），
-    # 且不得误报普通业务文本。脚本只告警、不改写值。
-    from to_kdocs_payload import find_risky_text
+    # D3: 「会被引擎改写」的纯文本必须能被检出并**无损转义**（真机实测：前置单引号
+    # 被引擎当文本标记消费掉、回读值不含引号），且不得误报普通业务文本 / 日期序列号。
+    from to_kdocs_payload import find_risky_text, risky_reason, escape_risky_text
     risky = find_risky_text([(0, 0, "0012"), (0, 1, "=A1"), (0, 2, "12345678901234567"),
                              (0, 3, "+86"), (0, 4, "正常需求描述"), (0, 5, "2026-09-11"),
                              (0, 6, "-"), (0, 7, "商务经理")])
     assert [r[2] for r in risky] == ["0012", "=A1", "12345678901234567", "+86"], risky
     assert find_risky_text([]) == []
+    assert risky_reason("46274") is None          # 日期序列号必须保持"可被转成数字"
+    assert escape_risky_text("0012") == "'0012"
+    assert escape_risky_text("商务经理") == "商务经理"
+    assert escape_risky_text("46274") == "46274"
+    assert escape_risky_text("'abc") == "''abc"    # 本身带引号 → 再补一层，存回来仍是 'abc
     # 关键契约：工作表键名必须是 worksheet_id（连接器参数名），不是 sheetId
     body = build_body("F1", 3, rd)
     assert set(body) == {"file_id", "worksheet_id", "rangeData"}, body.keys()

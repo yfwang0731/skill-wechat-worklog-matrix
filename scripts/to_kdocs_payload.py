@@ -46,30 +46,51 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from common import load_config, col_index
 
-# 以这些字符开头的纯文本，表格引擎可能按「公式」解析而不是当文本存
-RISKY_PREFIX = ("=", "+", "-", "@")
+# 会被表格引擎"改写"的纯文本：以这些字符开头会被当公式/数值解析，
+# 其中 `'` 还会被引擎当"文本标记"吃掉；前导零数字串会被转数值丢零；≥16 位纯数字丢精度。
+RISKY_PREFIX = ("=", "+", "-", "@", "'")
+
+
+def risky_reason(s):
+    """该纯文本在 formula op 里"存进去 ≠ 存回来"的原因；安全则返回 None。"""
+    s = str(s)
+    if not s:
+        return None
+    if len(s) > 1 and s[0] in RISKY_PREFIX:
+        return f"以 {s[0]!r} 开头，会被当公式/数值解析，或被当文本标记吃掉"
+    if re.fullmatch(r"0\d+", s):
+        return "带前导零的数字串，会被转成数值而丢零"
+    if re.fullmatch(r"\d{16,}", s):
+        return "16 位以上纯数字，超出 Excel 15 位有效数字，会丢精度"
+    return None
 
 
 def find_risky_text(cells):
-    """挑出「以 formula op 写入可能被表格引擎改写」的纯文本值。
-
-    返回 [(row0, col0, 值, 原因)]。只做**检测与告警，不改写值** ——
-    转义语义（如前置单引号）依赖具体表格引擎，未在真机确认前不擅自加，
-    以免把"可能被改写"变成"一定被改写"。命中的交给调用方与用户确认。
-    """
+    """挑出「以 formula op 写入会被引擎改写」的纯文本值 → [(row0, col0, 值, 原因)]。"""
     out = []
     for r, c, v in cells or []:
-        s = str(v)
-        why = None
-        if len(s) > 1 and s[0] in RISKY_PREFIX:
-            why = f"以 {s[0]!r} 开头，可能被当作公式/负数解析"
-        elif re.fullmatch(r"0\d+", s):
-            why = "带前导零的数字串，可能被转成数值而丢零"
-        elif re.fullmatch(r"\d{16,}", s):
-            why = "16 位以上纯数字，Excel 只有 15 位有效数字，可能丢精度"
+        why = risky_reason(v)
         if why:
-            out.append((r, c, s, why))
+            out.append((r, c, str(v), why))
     return out
+
+
+def escape_risky_text(value):
+    """把会被改写的纯文本转成安全的文本字面量：**前置一个单引号**。
+
+    真机验证（2026-09-11，`create_file_with_content` 与 `sheet.update_range_data`
+    两条路径行为一致，回读用 `get_typed_value`）：
+
+        0012               -> double 12                    '0012               -> string "0012"
+        =A1                -> string "测试项"（被当真公式求值！）  '=A1            -> string "=A1"
+        12345678901234567  -> double 12345678901234500     '12345678901234567  -> string 原样
+        +86                -> double 86                   '+86                -> string "+86"
+
+    引号被引擎当"文本标记"消费掉，**回读值不含引号** → 无损转义。
+    只加一层：值本身以 `'` 开头时也照加（`''abc` 存回来仍是 `'abc`，等于原值）。
+    """
+    s = str(value)
+    return ("'" + s) if risky_reason(s) else s
 
 
 def _num_to_str(v):
@@ -171,6 +192,10 @@ def main():
     ap.add_argument("--date-numfmt", default=None, help="日期数字格式，默认 yyyy/m/d")
     ap.add_argument("--no-date-format", action="store_true",
                     help="不补 format op（仅写值）")
+    ap.add_argument("--no-escape-risky-text", action="store_true",
+                    help="不自动给「会被引擎改写」的纯文本加单引号前缀。"
+                         "默认**自动转义**（真机实测无损：前置单引号被引擎当文本标记消费掉，"
+                         "回读值不含引号）")
     ap.add_argument("--batch-size", type=int, default=100,
                     help="单次请求的 rangeData 上限（连接器实测上限 100，超出会被拒）")
     ap.add_argument("--config", default=None)
@@ -209,8 +234,10 @@ def main():
     cells = normalize_values(payload)
     if not cells:
         print("[warn] payload 里没有可写入的非空单元格，输出空 rangeData。", file=sys.stderr)
-    rd = build_range_data(cells, date_cols0, date_numfmt, not args.no_date_format)
     risky = find_risky_text(cells)
+    if risky and not args.no_escape_risky_text:
+        cells = [(r, c, escape_risky_text(v)) for r, c, v in cells]
+    rd = build_range_data(cells, date_cols0, date_numfmt, not args.no_date_format)
 
     chunks = chunk_range_data(rd, args.batch_size)
     calls = [build_body(file_id, ws_id, c) for c in chunks]
@@ -245,15 +272,19 @@ def main():
             print("  ⚠ file_id / worksheet_id 仍是占位符：请在 config.excel.kdocs 里补全，"
                   "或改用 --file-id / --worksheet-id 传入。")
         if risky:
-            print(f"  ⚠ 检测到 {len(risky)} 个「以 formula op 写入可能被引擎改写」的纯文本值：")
+            verb = ("**未转义**（--no-escape-risky-text）" if args.no_escape_risky_text
+                    else "已无损转义（前置单引号）")
+            print(f"  ⚠ 检测到 {len(risky)} 个「以 formula op 写入会被引擎改写」的纯文本值，{verb}：")
             for r, c, v, why in risky[:10]:
                 print(f"      R{r + 1}C{c + 1}  {v!r} — {why}")
             if len(risky) > 10:
-                print(f"      …另有 {len(risky) - 10} 个（完整清单请自行从 payload 里筛）")
-            print("      → **写入前先与用户确认这些值是否允许被改写**；"
-                  "必须原样保留时，先在 WPS 里把目标列设为「文本」格式再写。")
-            print("      （脚本刻意不做自动转义：`'` 前缀等语义依赖具体表格引擎，"
-                  "未在真机确认前擅自加会把「可能被改写」变成「一定被改写」。）")
+                print(f"      …另有 {len(risky) - 10} 个")
+            if args.no_escape_risky_text:
+                print("      → 这些值**会与源数据不一致**（前导零丢、`=` 开头被求真值）；"
+                      "去掉该开关即可安全写入。")
+            else:
+                print("      → 转义=前置一个单引号，引擎当文本标记消费掉、回读值不含引号"
+                      "（真机实测无损）。确需按公式写入时才用 --no-escape-risky-text。")
     else:
         print(text)
 
