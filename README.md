@@ -54,8 +54,9 @@ python scripts/build_matrix_rows.py final --preview merged_preview.csv --remove 
 #    云文档通道：final 改用 --snapshot <json>；需要补历史岗位时再加 --history <json>（见 SKILL.md）；再
 python scripts/to_kdocs_payload.py --payload payload.json --out kdocs_update.json
 #    然后 agent 逐批调 sheet.update_range_data（calls 数组），并 sheet.get_range_data 回读核对
-# 可选·事后补跑（默认从表格当前内容取新行；--new-rows 则从 CSV 取，不要求已落表）：
+# 可选·事后补跑（**必须**说明哪些行是本批新行，否则直接报错）：
 python scripts/position_reuse.py --workbook <xlsx> --new-rows final_rows.csv --out payload_n.json
+#    或 --start-row <本批首行号>（会扫该行之后的全部行，含历史）
 ```
 
 解密工具 wcdb-key-tool（第三方，不在本仓库内）：
@@ -95,6 +96,8 @@ git clone https://github.com/TANGandXUE/wcdb-key-tool scripts/tools/wcdb-key-too
 | 9 | 岗位复用默认扫整表 → 静默回填历史空缺格 | 默认只动新增行，历史只读；显式 `--start-row` 才越界 |
 | 10 | 云文档**没有便宜的历史读法**：`download_file` 需登录态（403）、`get_typed_value` 跳空单元格、`get_range_data`/`read_file` 每格带样式（≈450 B）、`find_range_data` 的 `filter` 未公开 | 云文档岗位复用改走 `--history`；拿不到就留空，别硬读整列 |
 | 11 | 岗位复用原需"先写一遍再补一遍"，两次写入之间行号可能错位 | **并进 `final`，一轮写入**；CSV 与写入内容永远一致 |
+| 12 | `position_reuse` 改成"自动取追加起始行"后**永远 0 条**（表格尾部还有空的带格式行时连提示都不打）= 静默无操作 | 默认模式**报错退出**，必须给 `--new-rows <final_rows.csv>` 或 `--start-row` |
+| 13 | 值一律以 `opType=formula` 写入 → `0012` 前导零 / `=A1` 等可能被表格引擎改写 | `to_kdocs_payload` **显式告警**并列出命中值（不改写值）；需原样保留时先把目标列设为「文本」格式 |
 
 **共性教训**：其中三条（空表头映射、`final` 起始行兜底为 2、`position_reuse` 默认扫整表）都会在
 **没有告警**的情况下改动「不该动的单元格」。现在的原则是 **拿不到追加起始行就报错退出**。

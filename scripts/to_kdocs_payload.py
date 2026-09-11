@@ -37,6 +37,7 @@ add_row 非幂等（重复调用会插多行），网络重试一次就多一行
 file_id / worksheet_id / date_columns 缺省时从 config.json（excel.kdocs / excel.date_columns）读取。
 """
 import os
+import re
 import sys
 import json
 import argparse
@@ -44,6 +45,31 @@ import argparse
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from common import load_config, col_index
+
+# 以这些字符开头的纯文本，表格引擎可能按「公式」解析而不是当文本存
+RISKY_PREFIX = ("=", "+", "-", "@")
+
+
+def find_risky_text(cells):
+    """挑出「以 formula op 写入可能被表格引擎改写」的纯文本值。
+
+    返回 [(row0, col0, 值, 原因)]。只做**检测与告警，不改写值** ——
+    转义语义（如前置单引号）依赖具体表格引擎，未在真机确认前不擅自加，
+    以免把"可能被改写"变成"一定被改写"。命中的交给调用方与用户确认。
+    """
+    out = []
+    for r, c, v in cells or []:
+        s = str(v)
+        why = None
+        if len(s) > 1 and s[0] in RISKY_PREFIX:
+            why = f"以 {s[0]!r} 开头，可能被当作公式/负数解析"
+        elif re.fullmatch(r"0\d+", s):
+            why = "带前导零的数字串，可能被转成数值而丢零"
+        elif re.fullmatch(r"\d{16,}", s):
+            why = "16 位以上纯数字，Excel 只有 15 位有效数字，可能丢精度"
+        if why:
+            out.append((r, c, s, why))
+    return out
 
 
 def _num_to_str(v):
@@ -184,6 +210,7 @@ def main():
     if not cells:
         print("[warn] payload 里没有可写入的非空单元格，输出空 rangeData。", file=sys.stderr)
     rd = build_range_data(cells, date_cols0, date_numfmt, not args.no_date_format)
+    risky = find_risky_text(cells)
 
     chunks = chunk_range_data(rd, args.batch_size)
     calls = [build_body(file_id, ws_id, c) for c in chunks]
@@ -217,6 +244,16 @@ def main():
         if not file_id or ws_id is None:
             print("  ⚠ file_id / worksheet_id 仍是占位符：请在 config.excel.kdocs 里补全，"
                   "或改用 --file-id / --worksheet-id 传入。")
+        if risky:
+            print(f"  ⚠ 检测到 {len(risky)} 个「以 formula op 写入可能被引擎改写」的纯文本值：")
+            for r, c, v, why in risky[:10]:
+                print(f"      R{r + 1}C{c + 1}  {v!r} — {why}")
+            if len(risky) > 10:
+                print(f"      …另有 {len(risky) - 10} 个（完整清单请自行从 payload 里筛）")
+            print("      → **写入前先与用户确认这些值是否允许被改写**；"
+                  "必须原样保留时，先在 WPS 里把目标列设为「文本」格式再写。")
+            print("      （脚本刻意不做自动转义：`'` 前缀等语义依赖具体表格引擎，"
+                  "未在真机确认前擅自加会把「可能被改写」变成「一定被改写」。）")
     else:
         print(text)
 

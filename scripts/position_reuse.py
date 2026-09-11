@@ -15,16 +15,22 @@
   2) 自定义范围：--start-row / --end-row 指定任意区间。
 两条路共用 `common.reuse_position_fill`，**不存在两套实现**。
 
-**本批新行**用 `--new-rows <final_rows.csv>` 从 CSV 取（Excel 行号 = 起始行 + 序号），
-这样**不要求新行已落表**；不给则从表格当前内容取（此时新行必须先落表，否则 0 条）。
+**必须显式说明"哪些行算本批新行"**，否则直接报错退出 —— 默认模式无从判断：
+追加起始行 = 末数据行 + 1，从那里向下扫恒为空 → 只会得到 0 条（表格尾部若还有
+空的"带格式行"，甚至一条提示都不打，属静默无操作）：
+  - `--new-rows <final_rows.csv>`（推荐）：从 final 产物取新行，Excel 行号 = 起始行 + 序号，
+    **不要求新行已落表**；行号由 --workbook/--snapshot 推算，或显式 --start-row。
+  - `--start-row <本批首行号>`：显式指定扫描起点（会扫该行之后的**全部**行，含历史）。
+历史行永远只读。
 
 输出 payload（editor_sdk 格式）供回填；云文档通道再经 to_kdocs_payload.py 转成 kdocs rangeData。
 
 依赖：openpyxl（仅本地 --workbook 通道；--snapshot / --history 不需要）
 用法：
-  python position_reuse.py --workbook <xlsx> --out payload_n.json [--override]
+  python position_reuse.py --workbook <xlsx> --new-rows final_rows.csv --out payload_n.json
   python position_reuse.py --snapshot <json> --new-rows final_rows.csv --out payload_n.json
   python position_reuse.py --history <json> --start-row 192 --new-rows final_rows.csv --out payload_n.json
+  python position_reuse.py --workbook <xlsx> --start-row 192 --out payload_n.json [--override]
 """
 import csv
 import json
@@ -141,25 +147,36 @@ def main():
         sheet = pick_sheet(wb, sheet_hint)
     end = args.end_row or (sheet.max_row if sheet is not None else 0)
 
-    # 填充起点：缺省自动取"追加起始行"——**只改新增行，历史行只读**。
-    # 早期版本默认 2（=整表扫描），会把历史里位于"该人首个岗位值之后"的空缺格也回填，
-    # 属于超出用户意图的静默改写（已实测复现），故移除该兜底。
+    # ---- 锚点：必须明确"哪些行算本批新行" ----
+    # 默认模式（既不给 --new-rows 也不给 --start-row）**无从判断本批新行**：
+    # 追加起始行 = 末数据行 + 1，从那里向下扫恒为空 → 只会得到 0 条；
+    # 若表格尾部恰好还有"空的带格式行"，甚至一条提示都不会打印（静默无操作）。
+    # 这属于"看起来跑了、其实什么也没做"，与「绝不静默」原则冲突 → 改为直接报错退出。
+    # （早期版本缺省从第 2 行扫整表，会回填历史空缺格，属更严重的静默越界改写，早已移除。）
     if args.start_row:
         start = int(args.start_row)
-    else:
+        print(f"[start-row] 显式指定 = {start}")
+    elif args.new_rows:
         if sheet is None:
-            sys.exit("✗ 无法确定填充起点：--history 通道请显式给 --start-row <Excel行号>，"
-                     "或改用 --workbook / --snapshot 让脚本自动推算。")
+            sys.exit("✗ --new-rows 需要起点来推算 Excel 行号：请给 --workbook / --snapshot "
+                     "让脚本自动推算，或显式 --start-row <本批首行号>。")
         start = next_append_row_ws(sheet, mapping)
         if not start:
-            sys.exit("✗ 无法确定填充起点。请显式给 --start-row <Excel行号>。")
-        print(f"[start-row] 自动取追加起始行 = {start}（仅动新增行；历史行只作岗位来源）")
+            sys.exit("✗ 无法由表格推算起始行，请显式给 --start-row <本批首行号>。")
+        print(f"[start-row] 自动取追加起始行 = {start}（--new-rows 的 Excel 行号 = 该行 + 序号）")
+    else:
+        sys.exit(
+            "✗ 未指定「本批新行」的范围，已中止（避免静默 0 条 / 误改历史行）。\n"
+            "  默认模式无法判断哪些行是本批新行：追加起始行 = 末数据行 + 1，\n"
+            "  从该行向下扫恒为空 → 只会得到 0 条。请任选其一：\n"
+            "    --new-rows <final_rows.csv>   # 推荐：从 final 产物取新行（Excel 行号 = 起始行 + 序号）\n"
+            "    --start-row <本批首行号>       # 显式指定扫描起点（会扫该行之后的**全部**行，含历史）")
     start = max(start, header_row + 1)
 
-    if not args.new_rows and sheet is not None and start > end:
-        print(f"[warn] 填充起点 {start} 超过末行 {end}：本批新行尚未写入表格，"
-              f"无从复用 → 0 条。若要给本批新行复用岗位，请**先回填 payload.json 再跑本脚本**，"
-              f"或直接用 --new-rows <final_rows.csv> 从 CSV 取新行。")
+    if sheet is not None and start > end:
+        print(f"[warn] 扫描起点 {start} 超过末行 {end}：该区间为空 → 0 条。"
+              f"请确认 --start-row 是否指向本批新行（Excel 行号），"
+              f"或表格来源是否覆盖到了数据区。")
 
     hist, _ = load_history(args, sheet, header_row, start, col_person, col_post)
     recs = build_records(args, sheet, start, end, col_person, col_post)
