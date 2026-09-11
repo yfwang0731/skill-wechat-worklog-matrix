@@ -259,18 +259,29 @@ def analyze_workbook(wb, sheet_selector, label):
     missing = [k for k in COLUMN_ALIASES if k not in mapping and k in
                ("需求描述", "提出时间", "提出人", "解决人")]
 
-    # 数据末行（以任意已映射列有值为准）
-    last_row = header_row
-    mapped_cols = [col_index(l) + 1 for l in mapping.values()]
-    for r in range(header_row + 1, ws.max_row + 1):
-        if any(ws.cell(row=r, column=c).value not in (None, "") for c in mapped_cols):
-            last_row = r
+    # 关键守卫：一列都没识别出来时，**不能**给出追加行号。
+    # 原因：末数据行是靠"已映射列有值"判定的，mapping 为空则 any() 恒 False，
+    # 末行会停在第 1 行、next_append_row 变成 2 —— 据此写入会**覆盖已有数据**。
+    warnings = []
+    if not mapping:
+        last_row = None
+        warnings.append("未识别到任何列（表头名都不在内置别名表内）："
+                        "next_append_row 不可用，禁止据此写入；请先核对表头行/表头名。")
+    else:
+        last_row = header_row
+        mapped_cols = [col_index(l) + 1 for l in mapping.values()]
+        for r in range(header_row + 1, ws.max_row + 1):
+            if any(ws.cell(row=r, column=c).value not in (None, "") for c in mapped_cols):
+                last_row = r
+    if missing:
+        warnings.append("必需列未识别：" + "、".join(missing)
+                        + "（写入前请确认表头名或改用 --sheet 指定子表）")
 
     # 处理人候选：解决人/责任人 列中出现最多的值
     handler_candidates = []
     for logic in ("解决人", "责任人", "项目负责人"):
         l = mapping.get(logic)
-        if not l:
+        if not l or last_row is None:
             continue
         ci = col_index(l) + 1
         freq = {}
@@ -294,9 +305,10 @@ def analyze_workbook(wb, sheet_selector, label):
         "unmatched_headers": unmatched_headers,
         "missing_required": missing,
         "last_data_row": last_row,
-        "next_append_row": last_row + 1,
+        "next_append_row": (None if last_row is None else last_row + 1),
         "date_columns": date_cols,
         "handler_candidates": handler_candidates,
+        "warnings": warnings,
     }
 
 
@@ -337,7 +349,12 @@ def cmd_workbook(args):
     if result["unmatched_headers"]:
         print(f"  未识别表头 {len(result['unmatched_headers'])} 个（不影响写入）："
               + "、".join(f"{u['col']}:{u['header']}" for u in result["unmatched_headers"][:8]))
-    print(f"  末数据行 {result['last_data_row']} → 追加起始行 {result['next_append_row']}")
+    if result["last_data_row"] is None:
+        print("  末数据行：**无法判定**（未识别到任何列）→ 追加起始行不可用，禁止据此写入")
+    else:
+        print(f"  末数据行 {result['last_data_row']} → 追加起始行 {result['next_append_row']}")
+    for w in result.get("warnings") or []:
+        print(f"  ⚠ {w}")
     if result["handler_candidates"]:
         print("  处理人候选（自动推断）："
               + "、".join(f"{h['value']}({h['count']}次)" for h in result["handler_candidates"]))

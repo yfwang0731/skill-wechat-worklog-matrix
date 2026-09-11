@@ -47,8 +47,10 @@ def norm_o(o, cfg):
     post = ""
     for w in sorted(post_words(cfg), key=len, reverse=True):
         if o.endswith(w):
-            post = w
-            o = o[: -len(w)].strip(" .·-–—/\\")
+            rest = o[: -len(w)].strip(" .·-–—/\\")
+            # 姓名恰好等于岗位词时不要剥空（如 O="客服"、O="财务"），否则提出人会变成"(未知)"
+            if rest:
+                post, o = w, rest
             break
     return o or "(未知)", post
 
@@ -70,8 +72,12 @@ def load_agents(d, cfg):
     for r in rows:
         o, p = norm_o(r.get("O", ""), cfg)
         r["O"] = o
-        r.setdefault("N", p or (r.get("N") or ""))
-    rows.sort(key=lambda r: (r.get("ask_date", ""), r.get("chat", "")))
+        # 先判空再赋值：键存在但为空串时 setdefault 不会写入，会丢掉从 O 剥离出来的岗位
+        if not str(r.get("N") or "").strip():
+            r["N"] = p or ""
+    # 排序键要先兜 None：子代理 JSON 里出现 "ask_date": null 时，
+    # r.get("ask_date", "") 返回 None，会与 str 比较直接 TypeError 崩掉
+    rows.sort(key=lambda r: (str(r.get("ask_date") or ""), str(r.get("chat") or "")))
     for i, r in enumerate(rows):
         r["_i"] = i + 1
     return rows
@@ -101,8 +107,12 @@ def ids(s):
 
 
 def flag_dups(rows, cfg):
-    """跨会话疑似重复标记。为控制 O(n²) 成本，先按共享单号建索引，仅对
-    （共享单号 或 同近时间窗内文本相似）的候选对做比较，避免全量两两比对。
+    """跨会话疑似重复标记。
+
+    成本：最坏 O(n²)。两道剪枝把它压到实用范围——
+      1) 共享单号的候选对直接标记，不进相似度比对；
+      2) 相似度通道只在「时间窗 near_days 内」的对上跑，日期在预计算阶段解析一次
+         （早期版本每对都 strptime 两次，是主要耗时来源）。
     """
     rules = cfg.get("rules", {}) or {}
     thr = rules.get("similarity_threshold", 0.65)
@@ -111,13 +121,14 @@ def flag_dups(rows, cfg):
         return
 
     from datetime import datetime as dt
-    def days(a, b):
-        try:
-            return abs((dt.strptime(a, "%Y-%m-%d") - dt.strptime(b, "%Y-%m-%d")).days)
-        except Exception:
-            return 10 ** 9
 
-    # 预计算每行的 单号集 / clean 描述 / 时间，避免重复调用
+    def _d(s):
+        try:
+            return dt.strptime(str(s or "")[:10], "%Y-%m-%d")
+        except Exception:
+            return None
+
+    # 预计算每行的 单号集 / clean 描述 / 时间 / 解析后的日期对象
     prep = []
     for r in rows:
         prep.append({
@@ -125,6 +136,7 @@ def flag_dups(rows, cfg):
             "clean": clean(r.get("L", "")),
             "chat": r.get("chat", ""),
             "date": (r.get("ask_date") or ""),
+            "d": _d(r.get("ask_date")),
         })
 
     # 单号 -> 行下标（仅对"同单号出现 ≥2 次"的行留用）
@@ -171,7 +183,10 @@ def flag_dups(rows, cfg):
             # 双方都有单号但无交集 → 大概率不同需求，跳过相似比较
             if pa["id"] and prep[j]["id"] and not (pa["id"] & prep[j]["id"]):
                 continue
-            if days(pa["date"], prep[j]["date"]) > near_days:
+            da, db = pa["d"], prep[j]["d"]
+            if da is None or db is None:
+                continue            # 日期不可解析 → 不做时间窗内比对（与旧行为一致）
+            if abs((da - db).days) > near_days:
                 continue
             sim = difflib.SequenceMatcher(None, la, lb).ratio()
             if sim >= thr:
@@ -293,21 +308,33 @@ def cmd_final(args):
         for r in final:
             w.writerow({k: r.get(k, "") for k in mapping.keys()})
 
-    # 起始行：显式 > 快照(云文档) > workbook 自动 > config
+    # 起始行：显式 > 快照(云文档) > workbook 自动 > config.excel.start_row
+    # **不再兜底为 2**：拿不到起始行就报错退出。早期版本 `or 2` 会在忘传
+    # --workbook/--snapshot 时静默从第 2 行写，直接覆盖台账开头的数据。
     excel_cfg = cfg.get("excel", {}) or {}
     hint = excel_cfg.get("sheet_match", "运维")
     snap = getattr(args, "snapshot", None)
     wb = args.workbook or excel_cfg.get("workbook")
+    start = None
     if args.start_row_excel:
         start = int(args.start_row_excel)
+        print(f"[start-row] 显式指定 = {start}")
     elif snap and os.path.isfile(snap):
         start = next_append_row_snapshot(snap, hint, mapping)
         print(f"[start-row] 由云文档快照自动计算 = {start}")
     elif wb and os.path.isfile(wb):
         start = next_append_row(wb, hint, mapping)
         print(f"[start-row] 由工作簿自动计算 = {start}")
-    else:
-        start = excel_cfg.get("start_row") or 2
+    elif excel_cfg.get("start_row"):
+        start = int(excel_cfg["start_row"])
+        print(f"[start-row] 取自 config.excel.start_row = {start}")
+    if not start or start < 2:
+        raise SystemExit(
+            "✗ 无法确定追加起始行，已中止（避免覆盖台账已有数据）。\n"
+            "  请任选其一：--workbook <xlsx> / --snapshot <快照json> / "
+            "--start-row-excel <行号> / 在 config.excel.start_row 显式写死。")
+    if start == 2:
+        print("  ⚠ 起始行为第 2 行（表头下第一行）：确认该行确实是空行，否则会覆盖已有数据。")
 
     cells = []
     for i, r in enumerate(final):

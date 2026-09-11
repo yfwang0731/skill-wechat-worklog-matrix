@@ -83,14 +83,6 @@ def extract_range_data(obj):
     return []
 
 
-def load_raw(path):
-    """读一个 raw 文件，返回 (rangeData, 透传的 sheets 或 None)。"""
-    with open(path, encoding="utf-8") as f:
-        obj = json.load(f)
-    sheets = obj.get("sheets") if isinstance(obj, dict) else None
-    return extract_range_data(obj), sheets
-
-
 def pick_meta(obj):
     """从 raw 里顺带捞文档元信息（file_id / drive_id / worksheet_id），没有就返回 {}。"""
     KEYS = ("file_id", "drive_id", "worksheet_id", "sheetId", "sheet_id", "name")
@@ -124,7 +116,8 @@ def cmd_build(args):
         except json.JSONDecodeError as e:
             sys.exit(f"✗ {p} 不是合法 JSON（{e}）。"
                      "请把 kdocs 读表返回**原样**存盘，不要手工改结构。")
-        rd, sheets = load_raw(p)
+        rd = extract_range_data(obj)          # 只读一次文件
+        sheets = obj.get("sheets") if isinstance(obj, dict) else None
         n = len(rd or [])
         total_cells += n
         merge_range_data(store, rd)

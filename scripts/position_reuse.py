@@ -3,13 +3,22 @@
 
 **列位置由 config.json 的 column_mapping 决定**（提出人 / 提出人岗位），不再写死 N/O。
 默认只填空缺（不覆盖已有值）；加 --override 才允许覆盖为上方最近值。
-输出 payload（editor_sdk sheet_set_range_value 格式）供回填；
-云文档通道再经 to_kdocs_payload.py 转成 kdocs rangeData。
+
+**作用范围（重要）**：历史行只当"岗位来源"读，**永不修改**；填充只发生在 `--start-row` 起的行。
+`--start-row` 缺省自动取「追加起始行」（由 --workbook/--snapshot 推算），推不出来就报错退出 ——
+早期版本默认从第 2 行扫整表，会把历史里位于"该人首个岗位值之后"的空缺格一并回填
+（已实测复现：会静默改写超出用户意图的历史单元格）。
+
+**使用时序（重要）**：本脚本读的是"表格**当前**内容"。若要给**本批新增行**补岗位，
+必须**先回填 payload.json 让新行落表，再跑本脚本**生成 payload_n.json 回填；
+否则新行还不在表里，只会得到 0 条（脚本会打印 [warn] 说明）。
+
+输出 payload（editor_sdk 格式）供回填；云文档通道再经 to_kdocs_payload.py 转成 kdocs rangeData。
 
 依赖：openpyxl（仅本地通道；快照通道不需要）
 用法：
-  python position_reuse.py --workbook <xlsx> --out payload_n.json [--override]     # 本地
-  python position_reuse.py --snapshot <json> --out payload_n.json [--override]     # 云文档
+  python position_reuse.py --workbook <xlsx> --out payload_n.json [--override] [--start-row N]   # 本地
+  python position_reuse.py --snapshot <json> --out payload_n.json [--override] [--start-row N]   # 云文档
 """
 import json
 import sys
@@ -25,7 +34,9 @@ def main():
     src.add_argument("--snapshot", help="云文档快照 json（WPS 通道）")
     ap.add_argument("--out", default="payload_n.json")
     ap.add_argument("--override", action="store_true")
-    ap.add_argument("--start-row", type=int, default=2)
+    ap.add_argument("--start-row", type=int, default=None,
+                    help="填充起点（Excel 行号）。缺省=自动取追加起始行，"
+                         "**只动新增行、历史行仅作岗位来源（只读）**")
     ap.add_argument("--end-row", type=int, default=None)
     ap.add_argument("--config", default=None)
     args = ap.parse_args()
@@ -70,9 +81,31 @@ def main():
         sheet = wb[names[0] if names else wb.sheetnames[0]]
     end = args.end_row or sheet.max_row
 
+    # 填充起点：缺省自动取"追加起始行"——**只改新增行，历史行只读**。
+    # 早期版本默认 2（=整表扫描），会把历史里位于"该人首个岗位值之后"的空缺格也回填，
+    # 属于超出用户意图的静默改写（已实测复现），故移除该兜底。
+    if args.start_row:
+        start = int(args.start_row)
+    else:
+        from common import next_append_row, next_append_row_snapshot
+        if args.snapshot:
+            start = next_append_row_snapshot(args.snapshot, sheet_hint, mapping)
+        elif args.workbook:
+            start = next_append_row(args.workbook, sheet_hint, mapping)
+        else:
+            start = None
+        if not start:
+            sys.exit("✗ 无法确定填充起点。请显式给 --start-row <Excel行号>，"
+                     "或提供 --workbook / --snapshot 让脚本按表头自动推算。")
+        print(f"[start-row] 自动取追加起始行 = {start}（仅动新增行；历史行只作岗位来源）")
+    start = max(start, header_row + 1)
+
+    if start > end:
+        print(f"[warn] 填充起点 {start} 超过末行 {end}：本批新行尚未写入表格，"
+              f"无从复用 → 0 条。若要给本批新行复用岗位，请**先回填 payload.json 再跑本脚本**"
+              f"（详见 SKILL.md「岗位复用」）。")
     last_post = {}
     changed = []
-    start = max(args.start_row, header_row + 1)
     for r in range(header_row + 1, start):      # 历史区：仅记录，不改
         person = sheet.cell(row=r, column=col_person).value
         post = sheet.cell(row=r, column=col_post).value
