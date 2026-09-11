@@ -26,6 +26,8 @@ agent_created: true
 - 本地表格通道（`excel.source=local`）需 `pip install openpyxl`；回填走 `tencent-local-office-edit`。
   只支持 `.xlsx`/`.xlsm`，旧版 `.xls`/`.xlt` 会被 `probe` 拒绝（先「另存为 .xlsx」）。
 - 云文档通道（`excel.source=kdocs`）需已连接**金山文档连接器**（`sheet.*` 工具），不需要 openpyxl。
+- **全流程尽量用同一个解释器**，且确认它装了上面两个库 —— 换了没装 `zstandard` 的解释器不会报错，
+  但会静默漏掉压缩消息里的需求（已踩）。本项目实测可用的隔离环境：`~/.workbuddy/binaries/python/envs/default`。
 - 解密用第三方 wcdb-key-tool（见「关键事实」第 2 条），skill 内不含。
 - 改完代码先自检：`python scripts/smoke_test.py --full`（import + 纯函数断言，不碰真实数据）。
 
@@ -62,8 +64,14 @@ agent_created: true
 7. **`decrypt.py` 必须显式传 `--db-dir`**：一台机器可能有多个微信账户，工具自动探测可能取到停用的那个。
 8. **群可能长期没消息**：真机上一个用户点名要看的群，最后一次发言在两周前。**先查活跃度再决定时间窗**，
    别默认"用户点名=近期有聊"；发现 0 条要如实报告并让用户决定是否扩窗。
-9. **`position_reuse` 默认只动新增行**：历史行只作岗位来源。早期版本默认从第 2 行扫整表，
-   会回填历史里的空缺格（静默越界改写）。现在 `--start-row` 缺省自动取追加起始行，推不出来就报错。
+9. **岗位复用默认只动新增行**：历史行只作岗位来源。早期版本默认从第 2 行扫整表，
+   会回填历史里的空缺格（静默越界改写）。现在起始行缺省自动取追加起始行，推不出来就报错。
+10. **云文档通道拿不到"便宜的历史岗位"**：实测四条路都不行 —— `download_file` 给的 URL 需登录态
+    （直接 curl 得 `403 userNotLogin`，所以云文档**退化不成**"下载到本地走本地通道"）；
+    `get_typed_value` **会跳过空单元格**（8 格只回 7 值），行列对不上；
+    `get_range_data` 与 `read_file` 是同一套带字体/边框的格式（≈450 B/格，读 N+O 全列 ≈200 KB 上下文，
+    且都无关掉样式的参数）；`find_range_data` 的 `filter` 结构未公开，传错会被**静默忽略并返回整段**（反而更贵）。
+    → 云文档的岗位复用一律走 `--history` 手动喂入；能留空就留空（见「岗位复用」）。
 
 ## 表格来源：两条通道（`config.excel.source`）
 
@@ -73,7 +81,7 @@ agent_created: true
 | 环节 | `local`（本地 xlsx） | `kdocs`（WPS 云文档） |
 |---|---|---|
 | 读表头/末行 | `probe.py workbook --workbook <xlsx>`（openpyxl） | agent 取数 → `sheet_snapshot.py build` → `probe.py workbook --snapshot <json>` |
-| 岗位复用 | `position_reuse.py --workbook <xlsx>` | `position_reuse.py --snapshot <json>` |
+| 岗位复用 | **`final` 内置**（读 workbook 历史，零成本） | `final --history <json>`（快照不含数据区，见「岗位复用」） |
 | 算追加起始行 | `build_matrix_rows.py final --workbook <xlsx>` | `build_matrix_rows.py final --snapshot <json>` |
 | 回填 | payload → `tencent-local-office-edit` | payload → `to_kdocs_payload.py` → agent 调 `sheet.update_range_data` |
 | 额外依赖 | openpyxl | 金山文档连接器 |
@@ -169,16 +177,33 @@ python scripts/build_matrix_rows.py final --preview <_out>/merged_preview.csv \
 判定开关 `rules.*`（ignore_if_rejected / ignore_if_no_reply / data_change_default_done）按模板
 【开关渲染表】注入（开=现文，关=替换为表中替代句）。**不要发未注入的裸模板。**
 
-### 岗位复用（`rules.reuse_position_column`）
-`position_reuse.py` 按行序向上找同一提出人最近的岗位值填补空缺，**只填空缺、不覆盖更具体值**；
-加 `--override` 才允许用上方值覆盖。
+### 岗位复用（`rules.reuse_position_column`，默认开）
+按行序向上找同一提出人**最近的岗位值**填补空缺，**只填空缺、不覆盖更具体值**（`--override` 才覆盖）。
 
-- **作用范围**：历史行只作来源（只读），填充只发生在 `--start-row` 起的行；
-  `--start-row` 缺省自动取追加起始行，推不出来就报错退出。
-- **使用时序**：它读的是表格**当前**内容。若要给**本批新增行**补岗位，必须
-  **先回填 `payload.json` 让新行落表 → 再跑本脚本 → 再回填 `payload_n.json`**；
-  否则新行还不在表里，只会得到 0 条（脚本会打印 `[warn]` 说明）。
-- 设 `rules.reuse_position_column=false` 可整步跳过（脚本读 config 自检退出）。
+**常规流程已内置到 `final`，一轮写入完成**：`build_matrix_rows.py final` 算出追加起始行后，
+从**同一个表格来源**读历史区 `[表头行+1, 起始行-1]`（**只读**），把本批空岗位补齐，再写
+`final_rows.csv` 与 `payload.json` —— 因此**不再需要**"先写一遍、再跑 `position_reuse` 补一遍"，
+`final` 的 CSV 与你真正写进表格的内容**永远一致**（复用发生在写 CSV 之前）。
+
+- 关闭：`--no-reuse-position`，或 `rules.reuse_position_column=false`（脚本自检后整步跳过）。
+- **历史区读到 0 个「人+岗位」对 → 显式告警并跳过**（云文档快照只含表头行时的典型情形）。
+- 只给 `--start-row-excel`、没给 `--workbook/--snapshot` → 同样**告警跳过**，不静默。
+- 本地通道自动读历史（openpyxl，零额外成本）；**云文档通道默认不读**（代价见「真机验证过的坑」第 10 条）。
+
+云文档需要补时，由 agent 取到历史后写成 json，用 `--history` 传入：
+```bash
+python scripts/build_matrix_rows.py final --preview merged_preview.csv --start-row-excel 192 \
+       --history history_positions.json     # {"positions": {"人名": "岗位"}}
+```
+
+> **更省的做法**：像"备注无岗位、历史也没岗位"的首次提法人，表内复用本来救不了
+> （岗位信息根本不在数据里）—— 直接在 `merged_preview.csv` 的「提出人岗位」列**裁决时补一个值**即可，
+> 成本为零且不依赖历史。不要把"补满岗位"当成必须达成的目标。
+
+**独立补跑**：`position_reuse.py` 保留用于事后补漏或自定义区间，与 `final` **共用同一实现**（`common.reuse_position_fill`）：
+- 默认从**表格当前内容**取新行（此时新行须已落表，否则 0 条 + `[warn]`）。
+- 加 `--new-rows <final_rows.csv>` 从 CSV 取新行（Excel 行号 = 起始行 + 序号），**不要求新行已落表**。
+- `--start-row` 缺省自动取追加起始行；历史行永远只读。
 
 ## 判定规则（对方提出 → 我方答复）
 > 生效方式：merge_cross_session / similarity_threshold / near_days 由 build_matrix_rows 代码读取；
@@ -206,7 +231,7 @@ python scripts/build_matrix_rows.py final --preview <_out>/merged_preview.csv \
 | `export_conversations.py` | 按 config 导出转录；**含消息正文解码**（ZSTD 解压 / appmsg 引用提取 / 系统消息归一化） |
 | `split_for_agents.py` | 转录按**文件大小均衡**分成 N 份，输出 `agent_N.txt` 清单 |
 | `build_matrix_rows.py` | `preview`（去重标记+裁决）/ `final`（按列映射生成 payload） |
-| `position_reuse.py` | 岗位列向上复用（历史只读、只动新增行） |
+| `position_reuse.py` | 岗位列向上复用**独立补跑**（与 `final` 共用 `common.reuse_position_fill`；历史只读、只动新增行） |
 | `common.py` | 配置加载、路径识别、日期/列工具、云文档快照抽象层（`GridWorkbook`/`GridSheet`/`sparse_to_grid`） |
 | `pipeline.py` | `probe`（探测确认）/ `run`（执行） |
 
@@ -217,8 +242,8 @@ python scripts/build_matrix_rows.py final --preview <_out>/merged_preview.csv \
 | `pipeline.py run` | `[--since] [--skip-decrypt] [--reextract]` |
 | `probe.py` | `accounts --hint [--json]`；`sessions --decrypted <dir> [--since] [--keyword] [--json]`；`workbook (--workbook <xlsx> \| --snapshot <json>) [--sheet <关键字>] [--json]` |
 | `sheet_snapshot.py` | `plan --file-id <id> --worksheet-id <n> [--rows] [--cols] [--letters "L,M,O"]`；`build --raw <f>… --out <json> [--sheet <名>] [--worksheet-id] [--file-id] [--drive-id] [--name]`；`inspect --snapshot <json>` |
-| `build_matrix_rows.py` | `preview --src <_out> --out <csv> [--config]`；`final --preview <csv> [--remove "1,3"] [--merge "a:b"] [--out-dir] (--workbook <xlsx> \| --snapshot <json> \| --start-row-excel N) [--config]` |
-| `position_reuse.py` | `(--workbook <xlsx> \| --snapshot <json>) --out <json> [--override] [--start-row N] [--end-row N] [--config]` |
+| `build_matrix_rows.py` | `preview --src <_out> --out <csv> [--config]`；`final --preview <csv> [--remove "1,3"] [--merge "a:b"] [--out-dir] (--workbook <xlsx> \| --snapshot <json> \| --start-row-excel N) [--reuse-position \| --no-reuse-position] [--history <json>] [--config]` |
+| `position_reuse.py` | `(--workbook <xlsx> \| --snapshot <json> \| --history <json>) --out <json> [--new-rows <final_rows.csv>] [--override] [--start-row N] [--end-row N] [--config]` |
 | `to_kdocs_payload.py` | `--payload <json> [--out <json>] [--file-id] [--worksheet-id] [--date-cols "M,V,W"] [--date-numfmt yyyy-mm-dd] [--no-date-format] [--batch-size 100] [--config]` |
 
 ## 可配置项（见 `config.example.json`）

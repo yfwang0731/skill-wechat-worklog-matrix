@@ -4,27 +4,82 @@
 **列位置由 config.json 的 column_mapping 决定**（提出人 / 提出人岗位），不再写死 N/O。
 默认只填空缺（不覆盖已有值）；加 --override 才允许覆盖为上方最近值。
 
-**作用范围（重要）**：历史行只当"岗位来源"读，**永不修改**；填充只发生在 `--start-row` 起的行。
-`--start-row` 缺省自动取「追加起始行」（由 --workbook/--snapshot 推算），推不出来就报错退出 ——
+**作用范围（重要）**：历史行只当"岗位来源"读，**永不修改**；填充只发生在起始行起的行。
+起始行缺省自动取「追加起始行」（由 --workbook/--snapshot 推算），推不出来就报错退出 ——
 早期版本默认从第 2 行扫整表，会把历史里位于"该人首个岗位值之后"的空缺格一并回填
 （已实测复现：会静默改写超出用户意图的历史单元格）。
 
-**使用时序（重要）**：本脚本读的是"表格**当前**内容"。若要给**本批新增行**补岗位，
-必须**先回填 payload.json 让新行落表，再跑本脚本**生成 payload_n.json 回填；
-否则新行还不在表里，只会得到 0 条（脚本会打印 [warn] 说明）。
+**与 final 的关系（2026-09 起）**：`build_matrix_rows.py final` 已**内置**同一套复用逻辑，
+常规流程**一轮写入**即可完成，本脚本不再是必经步骤。保留它是为两个场景：
+  1) 事后补跑：把已落表的行补齐岗位；
+  2) 自定义范围：--start-row / --end-row 指定任意区间。
+两条路共用 `common.reuse_position_fill`，**不存在两套实现**。
+
+**本批新行**用 `--new-rows <final_rows.csv>` 从 CSV 取（Excel 行号 = 起始行 + 序号），
+这样**不要求新行已落表**；不给则从表格当前内容取（此时新行必须先落表，否则 0 条）。
 
 输出 payload（editor_sdk 格式）供回填；云文档通道再经 to_kdocs_payload.py 转成 kdocs rangeData。
 
-依赖：openpyxl（仅本地通道；快照通道不需要）
+依赖：openpyxl（仅本地 --workbook 通道；--snapshot / --history 不需要）
 用法：
-  python position_reuse.py --workbook <xlsx> --out payload_n.json [--override] [--start-row N]   # 本地
-  python position_reuse.py --snapshot <json> --out payload_n.json [--override] [--start-row N]   # 云文档
+  python position_reuse.py --workbook <xlsx> --out payload_n.json [--override]
+  python position_reuse.py --snapshot <json> --new-rows final_rows.csv --out payload_n.json
+  python position_reuse.py --history <json> --start-row 192 --new-rows final_rows.csv --out payload_n.json
 """
+import csv
 import json
+import os
 import sys
 import argparse
 
-from common import load_config, col_index
+from common import (load_config, load_snapshot, workbook_from_snapshot, pick_sheet,
+                    next_append_row_ws, position_columns, read_history_positions,
+                    reuse_position_fill)
+
+PERSON_KEY = "提出人"
+POST_KEY = "提出人岗位"
+
+
+def load_history(args, sheet, header_row, start, col_person, col_post):
+    """历史区 = [header_row+1, start-1]，**只读**。返回 (last_post, pairs)。"""
+    if args.history:
+        with open(args.history, encoding="utf-8") as f:
+            d = {str(k).strip(): str(v).strip()
+                 for k, v in ((json.load(f) or {}).get("positions") or {}).items()}
+        print(f"[history] 取自 {args.history}：{len(d)} 人")
+        return d, None
+    d, pairs = read_history_positions(sheet, header_row, start - 1, col_person, col_post)
+    print(f"[history] 读表第 {header_row + 1}~{start - 1} 行：{len(d)} 人 / {pairs} 对")
+    if not pairs:
+        print("  [warn] 历史区没有「提出人+岗位」成对数据：表格来源可能只含表头行"
+              "（云文档快照常见）。若确有历史岗位，请用 --history 传入。")
+    return d, pairs
+
+
+def build_records(args, sheet, start, end, col_person, col_post):
+    """产出一批待复用的行记录：[{"row": Excel行号, "提出人": 人, "提出人岗位": 岗位}]。
+
+    两种新行来源（CSV / 当前表格）都收敛到这里，后续只调用一次 reuse_position_fill。
+    """
+    if args.new_rows:
+        with open(args.new_rows, encoding="utf-8-sig") as f:
+            rows = list(csv.DictReader(f))
+        recs = [{"row": start + i,
+                 PERSON_KEY: (r.get(PERSON_KEY) or "").strip(),
+                 POST_KEY: (r.get(POST_KEY) or "").strip()}
+                for i, r in enumerate(rows)]
+        print(f"[new-rows] 从 {os.path.basename(args.new_rows)} 读 {len(recs)} 行"
+              f"（对应 Excel 第 {start}~{start + len(recs) - 1} 行）")
+        return recs
+    recs = []
+    for r in range(start, end + 1):
+        p = sheet.cell(row=r, column=col_person).value
+        q = sheet.cell(row=r, column=col_post).value
+        recs.append({"row": r,
+                     PERSON_KEY: str(p).strip() if p is not None else "",
+                     POST_KEY: str(q).strip() if q is not None else ""})
+    print(f"[new-rows] 从表格当前内容取第 {start}~{end} 行，共 {len(recs)} 行")
+    return recs
 
 
 def main():
@@ -32,6 +87,12 @@ def main():
     src = ap.add_mutually_exclusive_group(required=True)
     src.add_argument("--workbook", help="本地 .xlsx 路径（本地通道）")
     src.add_argument("--snapshot", help="云文档快照 json（WPS 通道）")
+    src.add_argument("--history",
+                     help='历史岗位 json（形如 {"positions":{"人名":"岗位"}}）：'
+                          "表格来源不含 N/O 列数据区时的通道")
+    ap.add_argument("--new-rows", default=None,
+                    help="本批新行 CSV（final 产出的 final_rows.csv）。给了就从 CSV 取新行，"
+                         "不要求新行已落表；不给则从表格当前内容取。")
     ap.add_argument("--out", default="payload_n.json")
     ap.add_argument("--override", action="store_true")
     ap.add_argument("--start-row", type=int, default=None,
@@ -51,35 +112,34 @@ def main():
     excel_cfg = cfg.get("excel", {}) or {}
     mapping = excel_cfg.get("column_mapping") or {}
     sheet_hint = excel_cfg.get("sheet_match") or "运维"
-    header_row = excel_cfg.get("header_row") or 1
+    header_row = int(excel_cfg.get("header_row") or 1)
 
-    # 列定位：优先按表头映射，缺失时退回常见位置（O=提出人, N=岗位）
-    if not mapping.get("提出人") or not mapping.get("提出人岗位"):
+    if not (mapping.get(PERSON_KEY) and mapping.get(POST_KEY)):
         print("⚠ 警告：config.excel.column_mapping 未包含「提出人/提出人岗位」，"
               "将退回默认列位（提出人=O, 岗位=N）。建议先跑 probe.py workbook 生成映射。")
-    col_person = col_index(mapping["提出人"]) + 1 if mapping.get("提出人") else 15
-    col_post = col_index(mapping["提出人岗位"]) + 1 if mapping.get("提出人岗位") else 14
+    col_person, col_post = position_columns(mapping)
     print(f"[columns] 提出人=第{col_person}列  岗位=第{col_post}列（来源："
-          f"{'表头映射' if mapping.get('提出人') else '默认位置'}）")
+          f"{'表头映射' if mapping.get(PERSON_KEY) else '默认位置'}）")
 
+    # ---- 表格来源（可选：--history 通道不需要）----
+    sheet = None
     if args.snapshot:
-        from common import load_snapshot, workbook_from_snapshot, pick_sheet
-        wb = workbook_from_snapshot(load_snapshot(args.snapshot))
-        sheet = pick_sheet(wb, sheet_hint)
-        print(f"[source] WPS 快照 {args.snapshot}（worksheet_id={getattr(sheet, 'sheet_id', None)}）")
-    else:
+        sheet = pick_sheet(workbook_from_snapshot(load_snapshot(args.snapshot)), sheet_hint)
+        print(f"[source] WPS 快照 {args.snapshot}"
+              f"（worksheet_id={getattr(sheet, 'sheet_id', None)}）")
+    elif args.workbook:
         import openpyxl
         from openpyxl.utils.exceptions import InvalidFileException
         # 旧版 .xls/.xlt 二进制格式 openpyxl 不支持（.xlsx/.xlsm/.xltx 可以）
         if args.workbook.lower().endswith((".xls", ".xlt")):
-            sys.exit("✗ openpyxl 不支持旧版 .xls/.xlt 格式。请先用 Excel/WPS 把工作簿「另存为 .xlsx」再运行。")
+            sys.exit("✗ openpyxl 不支持旧版 .xls/.xlt 格式。请先用 Excel/WPS 把工作簿"
+                     "「另存为 .xlsx」再运行。")
         try:
             wb = openpyxl.load_workbook(args.workbook)
         except InvalidFileException:
-            sys.exit(f"✗ 无法以 .xlsx 解析 {args.workbook}。若是旧版 .xls，请先另存为 .xlsx 再运行。")
-        names = [s for s in wb.sheetnames if sheet_hint in s]
-        sheet = wb[names[0] if names else wb.sheetnames[0]]
-    end = args.end_row or sheet.max_row
+            sys.exit(f"✗ 无法以 .xlsx 解析 {args.workbook}。若是旧版 .xls，请先另存为 .xlsx。")
+        sheet = pick_sheet(wb, sheet_hint)
+    end = args.end_row or (sheet.max_row if sheet is not None else 0)
 
     # 填充起点：缺省自动取"追加起始行"——**只改新增行，历史行只读**。
     # 早期版本默认 2（=整表扫描），会把历史里位于"该人首个岗位值之后"的空缺格也回填，
@@ -87,53 +147,31 @@ def main():
     if args.start_row:
         start = int(args.start_row)
     else:
-        from common import next_append_row, next_append_row_snapshot
-        if args.snapshot:
-            start = next_append_row_snapshot(args.snapshot, sheet_hint, mapping)
-        elif args.workbook:
-            start = next_append_row(args.workbook, sheet_hint, mapping)
-        else:
-            start = None
+        if sheet is None:
+            sys.exit("✗ 无法确定填充起点：--history 通道请显式给 --start-row <Excel行号>，"
+                     "或改用 --workbook / --snapshot 让脚本自动推算。")
+        start = next_append_row_ws(sheet, mapping)
         if not start:
-            sys.exit("✗ 无法确定填充起点。请显式给 --start-row <Excel行号>，"
-                     "或提供 --workbook / --snapshot 让脚本按表头自动推算。")
+            sys.exit("✗ 无法确定填充起点。请显式给 --start-row <Excel行号>。")
         print(f"[start-row] 自动取追加起始行 = {start}（仅动新增行；历史行只作岗位来源）")
     start = max(start, header_row + 1)
 
-    if start > end:
+    if not args.new_rows and sheet is not None and start > end:
         print(f"[warn] 填充起点 {start} 超过末行 {end}：本批新行尚未写入表格，"
-              f"无从复用 → 0 条。若要给本批新行复用岗位，请**先回填 payload.json 再跑本脚本**"
-              f"（详见 SKILL.md「岗位复用」）。")
-    last_post = {}
-    changed = []
-    for r in range(header_row + 1, start):      # 历史区：仅记录，不改
-        person = sheet.cell(row=r, column=col_person).value
-        post = sheet.cell(row=r, column=col_post).value
-        if person and str(person).strip() and post and str(post).strip():
-            last_post[str(person).strip()] = str(post).strip()
+              f"无从复用 → 0 条。若要给本批新行复用岗位，请**先回填 payload.json 再跑本脚本**，"
+              f"或直接用 --new-rows <final_rows.csv> 从 CSV 取新行。")
 
-    for r in range(start, end + 1):
-        person = sheet.cell(row=r, column=col_person).value
-        post = sheet.cell(row=r, column=col_post).value
-        if not person or not str(person).strip():
-            continue
-        person = str(person).strip()
-        cur = str(post).strip() if post else ""
-        if person in last_post and last_post[person]:
-            hist = last_post[person]
-            if (not cur) or (args.override and cur != hist):
-                changed.append((r, person, cur, hist))
-                cur = hist
-        if cur:
-            last_post[person] = cur
+    hist, _ = load_history(args, sheet, header_row, start, col_person, col_post)
+    recs = build_records(args, sheet, start, end, col_person, col_post)
+    changed = reuse_position_fill(recs, hist, PERSON_KEY, POST_KEY, override=args.override)
 
-    cells = [{"row": r - 1, "col": col_post - 1, "value_type": "STRING", "string_value": new}
-             for r, person, old, new in changed]
+    cells = [{"row": recs[c["i"]]["row"] - 1, "col": col_post - 1,
+              "value_type": "STRING", "string_value": c["new"]} for c in changed]
     with open(args.out, "w", encoding="utf-8") as f:
         json.dump({"values": cells}, f, ensure_ascii=False)
-    print(f"sheet: {sheet.title} | changed: {len(changed)}")
+    print(f"sheet: {sheet.title if sheet is not None else '(无表格来源)'} | changed: {len(changed)}")
     for c in changed:
-        print(f"  R{c[0]} {c[1]}: '{c[2]}' -> '{c[3]}'")
+        print(f"  R{recs[c['i']]['row']} {c['person']}: '{c['old']}' -> '{c['new']}'")
     print("payload ->", args.out)
 
 

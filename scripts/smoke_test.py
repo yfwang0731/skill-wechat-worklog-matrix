@@ -255,6 +255,57 @@ def smoke_guards_and_robustness():
     shutil.rmtree(d, ignore_errors=True)
 
 
+def smoke_reuse_position():
+    """岗位复用共用层：读历史只到 end_row、默认只填空缺、批内顺序传播。"""
+    from common import GridSheet, position_columns, read_history_positions, reuse_position_fill
+
+    # 列解析：有映射按映射，缺映射退回 提出人=O(15) / 岗位=N(14)
+    assert position_columns({"提出人": "O", "提出人岗位": "N"}) == (15, 14)
+    assert position_columns({"提出人": "C", "提出人岗位": "B"}) == (3, 2)
+    assert position_columns({}) == (15, 14)
+
+    gs = GridSheet("运维", [
+        ["需求描述", "提出人岗位", "提出人"],   # 第 1 行 = 表头
+        ["a", "客服", "张三"],                  # 第 2 行
+        ["b", "", "张三"],                      # 第 3 行
+        ["c", "", "李四"],                      # 第 4 行（李四始终没岗位）
+        ["d", "商务", "张三"],                  # 第 5 行
+    ])
+    # 只读到 end_row（历史区右端 = 追加起始行-1）→ 读到的是"客服"
+    hist, pairs = read_history_positions(gs, 1, 3, col_person=3, col_post=2)
+    assert hist == {"张三": "客服"} and pairs == 1, (hist, pairs)
+    # 扩到第 5 行：同一人取**最近**的非空值
+    hist2, pairs2 = read_history_positions(gs, 1, 5, col_person=3, col_post=2)
+    assert hist2 == {"张三": "商务"} and pairs2 == 2, (hist2, pairs2)
+    # 只读：网格没被改
+    assert gs.cell(row=3, column=3).value == "张三"
+
+    # 默认只填空缺；历史里没有的人不补；无提出人的行跳过
+    rows = [{"提出人": "张三", "提出人岗位": ""},
+            {"提出人": "张三", "提出人岗位": "财务"},
+            {"提出人": "王五", "提出人岗位": ""},
+            {"提出人": "", "提出人岗位": ""}]
+    ch = reuse_position_fill(rows, {"张三": "客服"}, override=False)
+    assert len(ch) == 1 and ch[0]["i"] == 0 and ch[0]["new"] == "客服", ch
+    assert rows[0]["提出人岗位"] == "客服"
+    assert rows[1]["提出人岗位"] == "财务", rows[1]     # 默认不覆盖已有值
+    assert rows[2]["提出人岗位"] == ""                  # 历史无此人
+    assert rows[3]["提出人岗位"] == ""
+
+    # override=True 才覆盖
+    rows2 = [{"提出人": "张三", "提出人岗位": "财务"},
+             {"提出人": "张三", "提出人岗位": ""}]
+    ch2 = reuse_position_fill(rows2, {"张三": "客服"}, override=True)
+    assert [c["i"] for c in ch2] == [0, 1], ch2
+    assert rows2[0]["提出人岗位"] == "客服"
+
+    # 批内顺序传播：本批前一行已有的岗位供本批后续行使用（历史为空也能补）
+    rows3 = [{"提出人": "赵六", "提出人岗位": "调度"},
+             {"提出人": "赵六", "提出人岗位": ""}]
+    ch3 = reuse_position_fill(rows3, {}, override=False)
+    assert len(ch3) == 1 and ch3[0]["i"] == 1 and ch3[0]["new"] == "调度", ch3
+
+
 def smoke_build():
     from build_matrix_rows import norm_o, ids, QMAP
     cfg = {"people": {"counterparty_keyword": "李四"}, "post_words": ["财务", "客服"]}
@@ -297,6 +348,8 @@ def main():
     check("raw.json 多形态识别", smoke_snapshot_raw_parse)
     check("payload -> kdocs rangeData", smoke_kdocs_payload)
     check("probe.analyze_workbook 吃 GridWorkbook", smoke_probe_analyze)
+    print("== 岗位复用共用层（final 内置 / position_reuse 共用）==")
+    check("列解析/历史只读到 end_row/只填空缺/批内传播", smoke_reuse_position)
     print("== build_matrix_rows 单测 ==")
     check("norm_o/ids/QMAP", smoke_build)
     print("== position_reuse ==")

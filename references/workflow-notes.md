@@ -52,7 +52,9 @@
 - **提出时间 = 首次提出日**，不是我方答复日（真机曾把 09-09 的提出记成 09-10 的答复日）。
 - 数据修改类：没答完成也没拒绝 → 默认完成，时间取提出日期。
 - 同一需求多个会话都出现 → 合并一行，提出人取最早提出者。
-- 岗位复用：按行序向上找同提出人最近一次岗位值；**历史行只读**，填充只发生在 `--start-row` 起的行。
+- 岗位复用：按行序向上找同提出人最近一次岗位值；**历史行只读**，填充只发生在起始行起的行。
+  2026-09 起**内置在 `final`**（历史区 = `[表头行+1, 起始行-1]`，复用发生在写 `final_rows.csv` 之前），
+  所以一轮写入即可完成；`position_reuse.py` 降级为独立补跑工具，两者共用 `common.reuse_position_fill`。
 - 单元格只放业务结果：**备注等列一律不写判定依据/分析过程**。
 
 ## 解密（wcdb-key-tool，第三方灰色工具，不在 skill 内）
@@ -68,11 +70,12 @@
 - 合规：只读本机、数据不出电脑，使用前向用户确认。
 
 ## 两种表格来源（`excel.source`：local / kdocs）
-两条通道算法完全一致（列映射 / 判定规则 / payload 结构 / 岗位复用逻辑都不变），只换读表与回填的 I/O。
+两条通道算法完全一致（列映射 / 判定规则 / payload 结构 / 岗位复用算法都不变），只换读表与回填的 I/O；
+差别只在**取数成本**：本地 openpyxl 读历史是免费的，云文档读历史太贵（见下「云文档读历史没有便宜路径」）。
 
 ### 通道 A：local（本地 .xlsx）
-- 读：`probe.py workbook --workbook <xlsx>`、`position_reuse.py --workbook <xlsx>`（openpyxl）。
-- 追加起始行：`build_matrix_rows.py final --workbook <xlsx>`。
+- 读：`probe.py workbook --workbook <xlsx>`（openpyxl）。
+- 追加起始行 + **岗位复用**：`build_matrix_rows.py final --workbook <xlsx>`（一次读表两用；复用零额外成本）。
 - 回填：editor_sdk（见下节）。
 
 ### 通道 B：kdocs（WPS 云文档）
@@ -84,9 +87,29 @@
 读表**分两趟窄读**，别把整表搬进上下文：
 1. `sheet.get_sheets_info` 拿工作表清单 / `worksheet_id` / 已用区域上限。
 2. 第 1 趟只读前 3 行 × 全部列 → 认表头（目的是拿 `column_mapping`）。
-3. 第 2 趟按映射只读关键列（需求描述/提出时间/提出人/提出人岗位/解决人…）→ 算末数据行与岗位复用。
-4. 表很长时优先用 **`sheet.get_typed_value`（A1 记法，返回紧凑的 type+value）** 定位末行，
-   比 `get_range_data` 省得多——【真机】就是用它在 2 次调用内定位到末数据行。
+3. 第 2 趟按映射只读关键列（需求描述/提出时间/提出人/解决人…）→ 算末数据行。
+4. 只想知道**末数据行**时，`sheet.get_typed_value`（A1 记法，返回紧凑 type+value）很省 ——
+   【真机】就是用它在 2 次调用内定位到末行的。
+   ⚠️ **但它会"跳过空单元格"**（8 格只回 7 值），**行列位置对不上**，
+   所以**绝不能**用它建"逐行的人→岗位"映射（真机实测：`N190:O193` 4 行 × 2 列只回 4 个值）。
+   需要行级定位时必须用 `get_range_data`（每条自带 `rowFrom/colFrom`）。
+
+### ⚠️ 云文档"读历史列"没有便宜路径（2026-09 四条路逐条实测）
+岗位复用需要读 `提出人 + 提出人岗位` 两列的历史。四条路都实测过，结论是**都不可行**：
+
+| 路径 | 实测结果 |
+|---|---|
+| `drive.download_file` → curl | 返回 `url` 但**需登录态**，直接 curl 得 `403 {"result":"userNotLogin"}`。**云文档无法下载到本地再走本地通道** |
+| `sheet.get_typed_value` | **跳过空单元格** → 行归属错位（见上） |
+| `sheet.get_range_data` | 每条带 alignment/fonts/`cell_background_color`/`hasBorder`/`numFormat`，约 **450 B/格**；读 N+O 全列（≈382 格）≈ **200 KB** 上下文，且**没有关掉样式的参数** |
+| `read_file(sheet_range=…)` | 返回**与 `get_range_data` 完全相同的带样式格式**（不是更精简的 markdown），一样贵。官方文档还给 xlsx 的 markdown 抽取标了「禁止」 |
+
+另有 `sheet.find_range_data`（带 `filter`/`option_cols`）看起来像"按人名定点查"，
+但 **`filter` 的结构未公开**：传错会被**静默忽略并返回整段**（比不查更贵）。
+它顺带返回的 `option_col[].texts` 是**按列的值计数**（例：N 列 14 格为空、O 列"韩宁"出现 1 次），
+可作廉价的存在性判断，但**不给行级配对**。
+
+→ 因此**云文档通道不做表内岗位复用**，改由 `final --history <json>` 手动喂入（agent 确有把握时才读）。
 
 接口契约（【真机】逐条实测）：
 - 工作表参数名是 **`worksheet_id`**（不是 `sheetId`）。

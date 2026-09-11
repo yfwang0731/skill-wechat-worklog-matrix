@@ -12,11 +12,19 @@
 
 合并对 a:b = 保留 a、删除 b。备注列默认清空（用户要求：单元格只写业务结果，不写判定/分析过程）。
 追加起始行来源优先级：--start-row-excel > --snapshot > --workbook > config.excel.start_row。
+**拿不到来源就报错退出**，绝不兜底为第 2 行。
+
+**岗位列复用已内置**：算出起始行后，从同一个表格来源读「历史区（表头下 ~ 起始行-1）」的
+提出人/岗位，把本批空岗位补齐，再写 final_rows.csv 与 payload.json —— 因此**一次写入即可完成**，
+不再需要"先写一遍、再跑 position_reuse 补一遍"。关闭方式：--no-reuse-position 或
+config.rules.reuse_position_column=false。云文档快照若不覆盖这两列数据区，会显式告警并跳过
+（可用 --history <json> 手动喂入）。
 """
 import json, os, re, csv, argparse, difflib
 
-from common import (load_config, col_index, serial, next_append_row,
-                    next_append_row_snapshot)
+from common import (load_config, col_index, serial, pick_sheet, next_append_row_ws,
+                    load_snapshot, workbook_from_snapshot, position_columns,
+                    read_history_positions, reuse_position_fill)
 
 # 岗位词表：用于从"提出人"文本里剥离岗位（可通过 config.post_words 覆盖/扩展）
 DEFAULT_POST_WORDS = ["商务经理", "商务", "客服", "接单客服", "财务", "调度", "前程操作",
@@ -302,29 +310,34 @@ def cmd_final(args):
     outdir = args.out_dir or os.path.dirname(args.preview)
     os.makedirs(outdir, exist_ok=True)
     csv_path = os.path.join(outdir, "final_rows.csv")
-    with open(csv_path, "w", newline="", encoding="utf-8-sig") as f:
-        w = csv.DictWriter(f, fieldnames=list(mapping.keys()))
-        w.writeheader()
-        for r in final:
-            w.writerow({k: r.get(k, "") for k in mapping.keys()})
 
-    # 起始行：显式 > 快照(云文档) > workbook 自动 > config.excel.start_row
+    # ---- 表格来源：只加载一次，供「起始行」与「历史岗位」共用 ----
+    # 来源优先级：--start-row-excel > --snapshot > --workbook > config.excel.start_row
     # **不再兜底为 2**：拿不到起始行就报错退出。早期版本 `or 2` 会在忘传
     # --workbook/--snapshot 时静默从第 2 行写，直接覆盖台账开头的数据。
     excel_cfg = cfg.get("excel", {}) or {}
     hint = excel_cfg.get("sheet_match", "运维")
+    header_row_cfg = int(excel_cfg.get("header_row") or 1)
     snap = getattr(args, "snapshot", None)
-    wb = args.workbook or excel_cfg.get("workbook")
+    wb_path = args.workbook or excel_cfg.get("workbook")
+    sheet, src = None, None
+    if snap and os.path.isfile(snap):
+        sheet = pick_sheet(workbook_from_snapshot(load_snapshot(snap)), hint)
+        src = f"云文档快照 {os.path.basename(snap)}"
+    elif wb_path and os.path.isfile(wb_path):
+        if wb_path.lower().endswith((".xls", ".xlt")):
+            raise SystemExit(f"✗ openpyxl 不支持旧版 {wb_path}，请先另存为 .xlsx。")
+        import openpyxl
+        sheet = pick_sheet(openpyxl.load_workbook(wb_path), hint)
+        src = f"工作簿 {os.path.basename(wb_path)}"
+
     start = None
     if args.start_row_excel:
         start = int(args.start_row_excel)
         print(f"[start-row] 显式指定 = {start}")
-    elif snap and os.path.isfile(snap):
-        start = next_append_row_snapshot(snap, hint, mapping)
-        print(f"[start-row] 由云文档快照自动计算 = {start}")
-    elif wb and os.path.isfile(wb):
-        start = next_append_row(wb, hint, mapping)
-        print(f"[start-row] 由工作簿自动计算 = {start}")
+    elif sheet is not None:
+        start = next_append_row_ws(sheet, mapping)
+        print(f"[start-row] 由{src}自动计算 = {start}")
     elif excel_cfg.get("start_row"):
         start = int(excel_cfg["start_row"])
         print(f"[start-row] 取自 config.excel.start_row = {start}")
@@ -335,6 +348,55 @@ def cmd_final(args):
             "--start-row-excel <行号> / 在 config.excel.start_row 显式写死。")
     if start == 2:
         print("  ⚠ 起始行为第 2 行（表头下第一行）：确认该行确实是空行，否则会覆盖已有数据。")
+        if sheet is not None and sheet.max_row <= header_row_cfg:
+            print("  ⚠ 表格来源**只有表头行**（未覆盖数据区），无法据此判断末数据行。"
+                  "若台账已有数据，请改用 --start-row-excel <行号>，或按 SKILL.md"
+                  "「WPS 通道读表」补读数据区后重建快照。")
+
+    # ---- 岗位列复用：在本批落表之前算好，随**同一份** payload 一次写入 ----
+    # 历史区 = [header_row+1, start-1]，**只读**；填充只发生在**本批行**上。
+    do_reuse = getattr(args, "reuse_position", None)
+    if do_reuse is None:
+        do_reuse = (cfg.get("rules", {}) or {}).get("reuse_position_column", True) is not False
+    if do_reuse:
+        col_person, col_post = position_columns(mapping)
+        if not (mapping.get("提出人") and mapping.get("提出人岗位")):
+            print(f"⚠ column_mapping 缺「提出人/提出人岗位」，复用退回默认列位"
+                  f"（提出人=第{col_person}列, 岗位=第{col_post}列）。")
+        hist = None
+        if getattr(args, "history", None):
+            with open(args.history, encoding="utf-8") as f:
+                hist = {str(k).strip(): str(v).strip()
+                        for k, v in ((json.load(f) or {}).get("positions") or {}).items()}
+            print(f"[reuse] 历史岗位取自 --history（{len(hist)} 人）")
+        elif sheet is not None:
+            hist, pairs = read_history_positions(sheet, header_row_cfg, start - 1,
+                                                 col_person, col_post)
+            print(f"[reuse] 读历史区第 {header_row_cfg + 1}~{start - 1} 行 → "
+                  f"{len(hist)} 人 / {pairs} 对")
+            if not pairs:
+                print("  ⚠ 历史区没有「提出人+岗位」成对数据：表格来源可能只含表头行"
+                      "（云文档快照常见，见 SKILL.md「WPS 通道读表」）。本批不补岗位。")
+        else:
+            print("⚠ 跳过岗位复用：未提供 --workbook/--snapshot，读不到历史岗位。"
+                  "需要时请给表格来源，或用 --history <json> 传入。")
+        if hist is not None:
+            ch = reuse_position_fill(final, hist)
+            for c in ch:
+                print(f"  [reuse] R{start + c['i']} {c['person']}: "
+                      f"'{c['old']}' -> '{c['new']}'")
+            print(f"[reuse] 补 {len(ch)} 个岗位（随 payload 一次写入）" if ch else
+                  "[reuse] 无需补岗位：本批要么已有岗位，要么历史里没有这些人的岗位")
+    else:
+        print("[reuse] 已跳过岗位复用（--no-reuse-position 或 "
+              "config.rules.reuse_position_column=false）。")
+
+    # final_rows.csv 写在复用之后：**保证 CSV 与真正写入表格的内容一致**。
+    with open(csv_path, "w", newline="", encoding="utf-8-sig") as f:
+        w = csv.DictWriter(f, fieldnames=list(mapping.keys()))
+        w.writeheader()
+        for r in final:
+            w.writerow({k: r.get(k, "") for k in mapping.keys()})
 
     cells = []
     for i, r in enumerate(final):
@@ -370,6 +432,14 @@ if __name__ == "__main__":
     p2.add_argument("--snapshot", default=None,
                     help="云文档快照 json（WPS 通道）；与 --workbook 二选一，用于自动算追加起始行")
     p2.add_argument("--start-row-excel", default=None)
+    rs = p2.add_mutually_exclusive_group()
+    rs.add_argument("--reuse-position", dest="reuse_position", action="store_true", default=None,
+                    help="强制开启岗位列复用（默认取 config.rules.reuse_position_column）")
+    rs.add_argument("--no-reuse-position", dest="reuse_position", action="store_false",
+                    help="本次跳过岗位列复用")
+    p2.add_argument("--history", default=None,
+                    help='手动喂入历史岗位 json（形如 {"positions":{"人名":"岗位"}}）；'
+                         "云文档快照不含 N/O 列数据区时用这个通道")
     p2.add_argument("--config", default=None)
     a = ap.parse_args()
     if a.cmd == "preview":
