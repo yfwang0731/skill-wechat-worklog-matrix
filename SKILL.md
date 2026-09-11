@@ -110,7 +110,9 @@ python scripts/sheet_snapshot.py build --raw raw_hdr.json --raw raw_cols.json --
 python scripts/sheet_snapshot.py inspect --snapshot <output.dir>/sheet_snapshot.json   # 核对末行/追加行
 ```
 > `get_range_data` 返回**稀疏**数组（只含有值的单元格，行列 0-based），`build` 会重建成密集网格并裁掉尾部/右侧空行列；
-> 快照同时记 `num_formats`。表很长时用 `get_typed_value`（A1 记法）窄读更快更省。
+> 快照同时记 `num_formats`。表很长、**只想知道末数据行**时，`get_typed_value`（A1 记法）更省；
+> ⚠️ 但它**会跳过空单元格**、无法行对齐（见「真机验证过的坑」第 10 条），
+> **不要**用它读关键列去建「人→岗位」映射——要行级定位必须用 `get_range_data`。
 
 ### WPS 通道回填
 ```bash

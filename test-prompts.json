@@ -8,7 +8,7 @@
   {
     "id": 2,
     "prompt": "直接改我 WPS 上那个需求跟踪表吧，链接给你 https://www.kdocs.cn/l/xxxx，不用本地文件了",
-    "expected": "走 kdocs 通道：解析 link_id → get_share_info 取 file_id/drive_id → get_sheets_info 取 sheetId → 两趟窄读（表头/关键列）→ sheet_snapshot build → probe --snapshot → … → to_kdocs_payload 生成 rangeData → sheet.update_range_data 写入并回读核对。不得使用非幂等的 sheet.add_row。",
+    "expected": "走 kdocs 通道：解析 link_id → get_share_info 取 file_id/drive_id → get_sheets_info 取 worksheet_id → 两趟窄读（表头/关键列）→ sheet_snapshot build → probe --snapshot → … → to_kdocs_payload 生成 rangeData → sheet.update_range_data 写入并回读核对。不得使用非幂等的 sheet.add_row。",
     "channel": "kdocs"
   },
   {
