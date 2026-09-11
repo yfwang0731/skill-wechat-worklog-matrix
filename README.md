@@ -40,6 +40,8 @@ python pipeline.py probe --snapshot <output.dir>/sheet_snapshot.json --dump prob
 # 2) 一次性确认（把探测结果一起呈现给用户确认：账户 / 表格来源 / 会话 / 时间范围 / 处理人）
 
 # 3) 写 config.json（复制 config.example.json 填写 account / excel / people / scope / defaults）
+#    ⚠ excel.column_mapping 与 excel.header_row 务必用第 1 步 probe 的 --json 输出粘进去，
+#      不要手填：final 依赖它们拿列位，漏填会直接停在报错上。
 
 # 4) 执行：解密 → 导出会话转录 → 分包 → 派发子代理 LLM 识别 → 预览裁决 → 生成 payload → 回填
 python pipeline.py run

@@ -123,32 +123,48 @@ def pick_sheet(workbook, sheet_hint=None):
     return workbook[cand[0] if cand else names[0]]
 
 
-def next_append_row_ws(ws, mapping=None):
+def last_data_row_ws(ws, mapping, header_row=1):
+    """末数据行（1-based），以**全部已映射列**有无值判定；mapping 为空返回 None。
+
+    这是「末数据行」的**唯一判据**：`probe.analyze_workbook` 与 `next_append_row_ws`
+    共用它。历史上两处各写一套（probe 用全部映射列，next_append_row 只用
+    "需求描述/提出时间/提出人" 3 个探针列），于是尾部行若只在**别的**映射列
+    （如 项目编号）有值，两处就会分歧：next_append_row 算出**更小**的起始行，
+    `final`/`position_reuse` 便据此**静默覆盖**尾行数据（2026-09-11 实跑复现）。
+    判据统一后，两处必然得出同一个起始行。
+    """
+    if not mapping:
+        return None
+    cols = [col_index(l) + 1 for l in mapping.values()]
+    last = header_row
+    for r in range(header_row + 1, ws.max_row + 1):
+        if any(ws.cell(row=r, column=c).value not in (None, "") for c in cols):
+            last = r
+    return last
+
+
+def next_append_row_ws(ws, mapping=None, header_row=1):
     """返回工作表下一个可追加行号（1-based）。
 
-    mapping 为 column_mapping（逻辑列名->列字母）时，以"需求描述/提出时间/提出人"列
-    有无值判定数据行；否则扫描**全部已有列**（不再只扫前 27 列，宽表也能判准）。
+    有 mapping 时与 probe 共用 `last_data_row_ws`（全部映射列判末行），保证
+    probe 与 final/position_reuse 得出**同一个**起始行；无 mapping 时退化为
+    扫描全部已有列（不再只扫前 27 列，宽表也能判准）。
     """
-    probe_cols = []
-    if mapping:
-        for key in ("需求描述", "提出时间", "提出人"):
-            l = mapping.get(key)
-            if l:
-                probe_cols.append(col_index(l) + 1)
-    if not probe_cols:
-        probe_cols = list(range(1, max(1, ws.max_column or 0) + 1))
-    last = 1
-    for r in range(1, ws.max_row + 1):
-        if any(ws.cell(row=r, column=c).value not in (None, "") for c in probe_cols):
-            last = r
+    last = last_data_row_ws(ws, mapping, header_row)
+    if last is None:
+        cols = list(range(1, max(1, ws.max_column or 0) + 1))
+        last = 1
+        for r in range(1, ws.max_row + 1):
+            if any(ws.cell(row=r, column=c).value not in (None, "") for c in cols):
+                last = r
     return last + 1
 
 
-def next_append_row(workbook_path, sheet_hint="运维", mapping=None):
+def next_append_row(workbook_path, sheet_hint="运维", mapping=None, header_row=1):
     """本地 xlsx 版本的追加起始行（依赖 openpyxl）。云文档通道请用 next_append_row_ws + 快照。"""
     import openpyxl
     wb = openpyxl.load_workbook(workbook_path)
-    return next_append_row_ws(pick_sheet(wb, sheet_hint), mapping)
+    return next_append_row_ws(pick_sheet(wb, sheet_hint), mapping, header_row)
 
 
 # ---------------- 表格快照（云文档 / WPS 通道）----------------
@@ -291,10 +307,10 @@ def workbook_from_snapshot(snap):
     return GridWorkbook(sheets)
 
 
-def next_append_row_snapshot(snapshot_path, sheet_hint="运维", mapping=None):
+def next_append_row_snapshot(snapshot_path, sheet_hint="运维", mapping=None, header_row=1):
     """快照版本的追加起始行（不依赖 openpyxl）。"""
     wb = workbook_from_snapshot(load_snapshot(snapshot_path))
-    return next_append_row_ws(pick_sheet(wb, sheet_hint), mapping)
+    return next_append_row_ws(pick_sheet(wb, sheet_hint), mapping, header_row)
 
 
 # ---------------- 岗位列复用（final 与 position_reuse 共用这一套）----------------

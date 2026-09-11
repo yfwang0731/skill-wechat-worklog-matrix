@@ -266,6 +266,29 @@ def smoke_guards_and_robustness():
     from common import next_append_row_ws
     assert next_append_row_ws(wide, None) == 2, next_append_row_ws(wide, None)
 
+    # N5: probe 与 final/position_reuse 的「追加起始行」必须**同源同值**。
+    # 尾行只在"非 3 探针列"的映射列有值时，旧实现会算出更小的起始行 → 覆盖尾行。
+    mp = {"项目编号": "A", "需求描述": "B", "提出时间": "C", "提出人": "D"}
+    tail_only_pid = GridWorkbook([GridSheet("运维", [
+        ["项目编号", "需求描述", "提出时间", "提出人"],
+        ["P1", "历史甲", "2026-09-01", "张三"],
+        ["P2", "历史乙", "2026-09-02", "李四"],
+        ["P3", "", "", ""],                       # 尾行只在项目编号列有值
+    ])])
+    _a = analyze_workbook(tail_only_pid, None, "snap.json")
+    _b = next_append_row_ws(tail_only_pid["运维"], _a["column_mapping"])
+    assert _a["next_append_row"] == _b == 5, (_a["next_append_row"], _b)
+    # 表头不在第 1 行时，两处也要一致（header_row 必须被透传）
+    two_hdr = GridWorkbook([GridSheet("运维", [
+        ["2026年运维台账", "", ""],
+        ["项目编号", "需求描述", "提出人"],
+        ["P1", "历史甲", "张三"],
+    ])])
+    _c = analyze_workbook(two_hdr, None, "snap.json")
+    assert _c["header_row"] == 2, _c["header_row"]
+    assert _c["next_append_row"] == 4, _c["next_append_row"]
+    assert next_append_row_ws(two_hdr["运维"], _c["column_mapping"], 2) == 4
+
     # C10: 姓名恰好等于岗位词时不剥空
     cfg = {"post_words": ["客服", "财务"]}
     assert norm_o("客服", cfg) == ("客服", ""), norm_o("客服", cfg)

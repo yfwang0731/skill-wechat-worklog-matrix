@@ -336,7 +336,7 @@ def cmd_final(args):
         start = int(args.start_row_excel)
         print(f"[start-row] 显式指定 = {start}")
     elif sheet is not None:
-        start = next_append_row_ws(sheet, mapping)
+        start = next_append_row_ws(sheet, mapping, excel_cfg.get("header_row") or 1)
         print(f"[start-row] 由{src}自动计算 = {start}")
     elif excel_cfg.get("start_row"):
         start = int(excel_cfg["start_row"])

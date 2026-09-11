@@ -160,7 +160,7 @@ def main():
         if sheet is None:
             sys.exit("✗ --new-rows 需要起点来推算 Excel 行号：请给 --workbook / --snapshot "
                      "让脚本自动推算，或显式 --start-row <本批首行号>。")
-        start = next_append_row_ws(sheet, mapping)
+        start = next_append_row_ws(sheet, mapping, header_row)
         if not start:
             sys.exit("✗ 无法由表格推算起始行，请显式给 --start-row <本批首行号>。")
         print(f"[start-row] 自动取追加起始行 = {start}（--new-rows 的 Excel 行号 = 该行 + 序号）")
