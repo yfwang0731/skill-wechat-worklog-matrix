@@ -93,7 +93,7 @@ def cmd_probe(args):
         print("\n② 未提供表格来源，跳过列映射探测。")
         if excel_cfg.get("source") == "kdocs":
             print("   云文档通道请先按 SKILL.md「WPS 通道读表」取数并生成快照：")
-            print("   python scripts/sheet_snapshot.py plan --file-id <id> --sheet-id <n>")
+            print("   python scripts/sheet_snapshot.py plan --file-id <id> --worksheet-id <n>")
             print("   python scripts/sheet_snapshot.py build --raw raw_hdr.json --raw raw_cols.json "
                   "--out <output.dir>/sheet_snapshot.json")
         else:
