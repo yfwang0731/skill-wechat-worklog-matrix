@@ -41,7 +41,9 @@ agent_created: true
   ```
 
   口令缓存 `~/.wcdb-key-tool/wechat-passphrase.json` 有效时无需重登；失效需重跑 `extract`（**微信须前台**）。
-  调用时**必须显式传 `--db-dir`**：一台机器可能有多个微信账户，工具自动探测可能取到停用的那个。
+  **一台机器可能有多个微信账户**，所以调 `decrypt.py` 时必须显式给 `--db-storage <目录>` ——
+  脚本内部会给 wcdb-key-tool 传 `--db-dir`，但**那是第三方工具的参数，不是 `decrypt.py` 的**，
+  直接写给 `decrypt.py` 会被 argparse 拒绝。
 - **`python scripts/smoke_test.py --full`** —— 改完代码先跑它（import + 纯函数断言，不碰真实数据）。
 
 ## 核心原则（勿重蹈覆辙）
@@ -328,7 +330,7 @@ python scripts/build_matrix_rows.py final --preview merged_preview.csv --start-r
 | `probe.py` | 探测 `accounts` / `sessions` / `workbook`（表头→列映射、末行、处理人候选） |
 | `sheet_snapshot.py` | 云文档通道：`plan`（读表调用体）/ `build`（稀疏→密集快照）/ `inspect` |
 | `to_kdocs_payload.py` | 云文档通道：payload → `sheet.update_range_data` 的 `rangeData`（自动分批 + 日期格式 + 风险值转义） |
-| `decrypt.py` | 封装 wcdb-key-tool 的 extract/decrypt（密钥按账号隔离，显式 `--db-dir`） |
+| `decrypt.py` | 封装 wcdb-key-tool 的 extract/decrypt（密钥按账号隔离，显式 `--db-storage`） |
 | `export_conversations.py` | 按 config 导出转录；含消息正文解码（ZSTD 解压 / appmsg 引用提取 / 系统消息归一化） |
 | `split_for_agents.py` | 转录按**文件大小均衡**分成 N 份，输出 `agent_N.txt` 清单 |
 | `build_matrix_rows.py` | `preview`（去重标记+裁决）/ `final`（按列映射生成 payload，**内含岗位复用**） |
@@ -336,12 +338,12 @@ python scripts/build_matrix_rows.py final --preview merged_preview.csv --start-r
 | `common.py` | 配置加载、路径识别、日期/列工具、云文档快照抽象层（`GridWorkbook`/`GridSheet`/`sparse_to_grid`） |
 | `pipeline.py` | `probe`（探测确认）/ `run`（执行） |
 
-### 参数速查（与 argparse 一致）
+### 参数速查（常用命令；`decrypt.py` / `export_conversations.py` / `split_for_agents.py` 通常由 `pipeline.py run` 代调，需要时见各自 `--help`）
 
 | 命令 | 参数 |
 |---|---|
-| `pipeline.py probe` | `--workbook <xlsx>` \| `--snapshot <json>` `--since` `--keyword` `--dump` |
-| `pipeline.py run` | `[--since] [--skip-decrypt] [--reextract]` |
+| `pipeline.py probe` | `(--workbook <xlsx>` \| `--snapshot <json>) [--since] [--keyword] [--dump] [--config]` |
+| `pipeline.py run` | `[--since] [--skip-decrypt] [--reextract] [--config]` |
 | `probe.py` | `accounts --hint [--json]`；`sessions --decrypted <dir> [--since] [--keyword] [--json]`；`workbook (--workbook <xlsx> \| --snapshot <json>) [--sheet <关键字>] [--json]` |
 | `sheet_snapshot.py` | `plan --file-id <id> --worksheet-id <n> [--rows] [--cols] [--letters "L,M,O"]`；`build --raw <f>… --out <json> [--sheet <名>] [--worksheet-id] [--file-id] [--drive-id] [--name]`；`inspect --snapshot <json>` |
 | `build_matrix_rows.py` | `preview --src <_out> --out <csv> [--config]`；`final --preview <csv> [--remove "1,3"] [--merge "a:b"] [--out-dir] (--workbook <xlsx> \| --snapshot <json> \| --start-row-excel N) [--reuse-position \| --no-reuse-position] [--history <json>] [--config]` |

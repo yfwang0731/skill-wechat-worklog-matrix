@@ -23,7 +23,9 @@
   （含家目录深度≤3 搜索）。**注意**：工具放在更深的目录里就找不到，此时用环境变量显式指定最稳。
 - ⚠️ 供应链注意：第三方灰色工具会随上游更新改变行为。clone 后记录所用 commit
   （`git -C scripts/tools/wcdb-key-tool rev-parse HEAD`），后续解密异常先核对是否工具版本漂移。
-- **`extract` 必须显式传 `--db-dir`**：多账户机器上自动探测可能取到停用的那个账号（【真机】踩到）。
+- **多账户机器必须显式指定库目录**：`decrypt.py` 的参数是 `--db-storage <目录>`
+  （`--db-dir` 是 wcdb-key-tool 自己的参数、由脚本内部透传，**不是** `decrypt.py` 的）；
+  不指定则自动探测可能取到停用的那个账号（【真机】踩到）。
 - 口令缓存 `~/.wcdb-key-tool/wechat-passphrase.json`：有效时无需重登；缓存丢失则先 `extract`（**微信须前台**）。
 - 密钥缓存按账号隔离：`decrypt.py` 输出 `output/keys_<账号目录>.json`。
 - 解密结果里 `.factory\...\*.db` 这类是**历史备份副本**，拿不到密钥属正常（会 SKIP），不影响主库。

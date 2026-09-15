@@ -93,25 +93,12 @@ git clone https://github.com/TANGandXUE/wcdb-key-tool scripts/tools/wcdb-key-too
 # 或设置环境变量 WCDB_KEY_TOOL 指向 wcdb_key_tool_windows.py
 ```
 
-## 设计与踩坑记录
+## 实测与可靠性
 
-2026-09 在一台 Windows + 微信 4.1 + WPS 云文档上完整实跑过，暴露并修复了一批
-「**没有报错、却把数据改错了**」的问题。执行所需的约束都写进了
-[`SKILL.md`](SKILL.md) 对应主题（云文档接口约束、岗位复用、微信库结构、判定规则）；
-机制推演与逐条实测见 [`references/workflow-notes.md`](references/workflow-notes.md)。
-这里只留三条最容易被忽略的结论：
-
-- **「末数据行」只能有一个判据**。探测（probe）与写入（final/position_reuse）曾各写一套，
-  尾部行只在非探针列有值时两处分歧 → 写入起始行偏小 → **静默覆盖**尾行。现已收敛为
-  `common.last_data_row_ws` 单一实现，并有 smoke 断言锁死两处同值。
-- **云文档拿不到「便宜的历史列」**。`download_file` 需登录态、`get_typed_value` 跳空单元格、
-  `get_range_data`/`read_file` 每格带样式（约 450 B）、`find_range_data` 的 filter 未公开 ——
-  四条路都试过。需要历史岗位就用 `--history` 手动喂，拿不到就留空，别硬读整列。
-- **纯文本值会被表格引擎静默改写**（`0012`→12、`=A1` 被当真公式求值、17 位数字丢精度、
-  `+86`→86）。`to_kdocs_payload.py` 已**默认自动转义**并列出命中项。
-
-从「为什么必须自己解密」到最近一次修复的**完整开发过程**（含每个阶段的取舍、被推翻的结论、
-以及独立的评测记录）见 [`CHANGELOG.md`](CHANGELOG.md)。
+2026-09 在一台 Windows + 微信 4.1 + WPS 云文档上完整实跑过，修复了一批「**没有报错、却把数据改错了**」
+的路径（静默覆盖尾行、云文档静默改写纯文本值等）。这些约束已写进 [`SKILL.md`](SKILL.md) 的对应主题，
+机制与逐条实测见 [`references/workflow-notes.md`](references/workflow-notes.md)，
+历次独立评测的分数轨迹与**被推翻的结论**见 [`CHANGELOG.md`](CHANGELOG.md)。
 
 ## 目录结构
 
