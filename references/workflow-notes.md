@@ -1,18 +1,33 @@
-# 工作流要点与坑位备忘（微信 4.x → 需求跟踪矩阵，通用）
+# 机制说明与实测记录（微信 4.x → 需求跟踪矩阵）
 
-> 本文件不记录任何具体客户/人员/项目信息，全部以占位符或配置键描述。
+> 本文件是 `SKILL.md` 的**详情层**：`SKILL.md` 讲"怎么做"，这里讲"**为什么这样** + 逐条实测依据"。
+> 不记录任何具体客户/人员/项目信息，全部以占位符或配置键描述。
 > 标 **【真机】** 的条目是 2026-09 在 Windows + 微信 4.1 + WPS 云文档上实跑踩出来的。
 
 ## 环境事实
+
 - 微信 4.1.x；进程 Weixin.exe。本地库在 `~/Documents/xwechat_files/<账户目录>/db_storage/`，SQLCipher 加密。
 - **一台机器可能有多个账户目录**，必须由用户选择。判断"哪个在用"的快捷办法：看各账户 `db_storage`
   下文件的 mtime，活跃账户会持续更新；停用账户的 mtime 会停在很久以前。
 - 消息库分片：`db_storage\message\message_1/2/3.db`（时间序 `_2` 最老 → `_3` 最新）；每会话消息表 `Msg_<md5(wxid)>`。
 - 发送者数字 id = **分片内** `Name2Id.rowid`（**跨分片会变**），不要跨分片复用。
 - `create_time` 秒级时间戳；`local_type` **低 32 位**为消息类型
-  （1=文字，3=图片，34=语音，43=视频，47=表情，49=链接/文件，50=通话）。高位还有别的位，必须先掩码。
+  （1=文字，3=图片，34=语音，43=视频，47=表情，49=链接/文件，50=通话，57=引用回复）。高位还有别的位，必须先掩码。
 - 会话范围/时间范围/处理人/对方关键字全部来自 `config.json`，不在代码里内置。
 - 验数据是否"到今"：`SELECT MAX(create_time)` 扫各分片的 `Msg_*` 表；只看某一会话容易误判。
+
+## 解密（wcdb-key-tool，第三方灰色工具，不在 skill 内）
+
+- 准备：`git clone https://github.com/TANGandXUE/wcdb-key-tool scripts/tools/wcdb-key-tool`
+  或设环境变量 `WCDB_KEY_TOOL` 指向 `wcdb_key_tool_windows.py`；`common.find_wcdb_tool` 会自动找
+  （含家目录深度≤3 搜索）。**注意**：工具放在更深的目录里就找不到，此时用环境变量显式指定最稳。
+- ⚠️ 供应链注意：第三方灰色工具会随上游更新改变行为。clone 后记录所用 commit
+  （`git -C scripts/tools/wcdb-key-tool rev-parse HEAD`），后续解密异常先核对是否工具版本漂移。
+- **`extract` 必须显式传 `--db-dir`**：多账户机器上自动探测可能取到停用的那个账号（【真机】踩到）。
+- 口令缓存 `~/.wcdb-key-tool/wechat-passphrase.json`：有效时无需重登；缓存丢失则先 `extract`（**微信须前台**）。
+- 密钥缓存按账号隔离：`decrypt.py` 输出 `output/keys_<账号目录>.json`。
+- 解密结果里 `.factory\...\*.db` 这类是**历史备份副本**，拿不到密钥属正常（会 SKIP），不影响主库。
+- 合规：只读本机、数据不出电脑，使用前向用户确认。
 
 ## 消息正文解码（【真机】最容易被忽略的一环）
 
@@ -35,11 +50,12 @@
 - `appmsg` 三者（title / 引用正文 / des）**都取不到**时，再兜底取**外层 `<content>` 或 `<url>`** ——
   否则只剩一个 `[链接/文件]`，纯文本型 appmsg 的需求会整条丢掉。只取有语义的字段，
   不做"去标签取全文"（那会把 `appid`/`fromusername` 之类 ID 混进转录）。
-  - `sysmsg`：系统通知；`type=revokemsg` → `[撤回了一条消息]`，其它 → `[系统消息]`。
-  - `voipmsg`：通话记录 → `[通话]`。
+- `sysmsg`：系统通知；`type=revokemsg` → `[撤回了一条消息]`，其它 → `[系统消息]`。
+- `voipmsg`：通话记录 → `[通话]`。
 - 结论：导出脚本 `render_content()` 是唯一的正文出口，新增消息类型时**只改这里**，并补 smoke 断言。
 
-## 列映射（关键改进）
+## 列映射
+
 - **列位置靠"表头名"识别**：`probe.py workbook` 读表头，按 `COLUMN_ALIASES`（逻辑列名 → 可能的表头名）匹配，
   产出 `column_mapping`（如 `"需求描述"→"L"`）。换模板也能用，不再写死 A~AA。
 - 匹配不到的表头列不写入（会打印未识别清单与 `warnings`）。
@@ -57,70 +73,39 @@
   已抽成同一函数，并用 smoke 断言锁死"两处同值 + `header_row` 必须透传"。
 - `date_columns` 里的列以 **Excel 序列号**写入，并设日期格式（**以目标表最新行的 `numFormat` 为准**）。
 
-## 判定规则（用户口径，可由 config.rules 开关）
-- 对方提出系统需求才算；寒暄/通知不算。拒绝或无实质回复 → 不写行。
-- **需求必须可交付**（能落成"改什么/修什么/加什么"）。**笼统抱怨不记**：只表达体感或情绪、指不出具体
-  对象的反馈（"系统特别卡/太慢了/不好用"）且我方未明确答复已解决 → 不写行（`rules.ignore_vague_complaints`）。
-  反之给出可定位对象或量化现象（哪个功能/哪一步操作/哪个单据，或"搜箱号要等15秒""审批后卡住"）→ 按 bug 记。
-  【真机】曾把群里一句「系统特别卡」（我方只回"稍等 重启系统"）记成 bug/完成，已据此规则修正。
-- 明确答"完成" → 计划时间=完成时间=答复日期。**运维动作与安抚不算完成**（重启系统/稍后看/换浏览器/
-  清缓存/再看看/我看看），不得据此记为完成 —— 这是上面那条真机记录的直接成因。
-- **提出时间 = 首次提出日**，不是我方答复日（真机曾把 09-09 的提出记成 09-10 的答复日）。
-- 数据修改类：没答完成也没拒绝 → 默认完成，时间取提出日期。
-- 同一需求多个会话都出现 → 合并一行，提出人取最早提出者。
-- 一条消息含多个需求 → 拆多行；解决人/责任人 = `people.handler`。
-- 单元格只放业务结果：**备注等列一律不写判定依据/分析过程**。
-
-## 岗位复用（`rules.reuse_position_column`）
-- **算法**：按行序向上找**同一提出人最近的岗位值**填补空缺；只填空缺，不覆盖更具体值（`--override` 才覆盖）。
-- **作用范围**：**历史行只读**，填充只发生在起始行起的行。
-- **时序**：2026-09 起**内置在 `final`**（历史区 = `[表头行+1, 起始行-1]`，复用发生在写
-  `final_rows.csv` **之前**），一轮写入即可完成；`position_reuse.py` 降级为独立补跑工具，
-  两者共用 `common.reuse_position_fill`。
-- ⚠️ 独立补跑时**必须显式说明"哪些行算本批新行"**（`--new-rows <final_rows.csv>` 或 `--start-row <首行号>`）：
-  默认模式无从判断——追加起始行 = 末数据行 + 1，从那里向下扫恒为空，只会得到 0 条；
-  表格尾部若还有空的"带格式行"，旧版本连提示都不打（静默无操作）。现已改为默认报错退出。
-- **孤儿尾行按预期保留**：只在非探针列（如项目编号）有值的尾行仍算有效数据行，本批从它**下方**追加
-  —— 宁可留一个空行，也绝不覆盖。要复用这类行需显式 `--start-row`。
-- **云文档不做表内复用**：读历史列的代价见下「云文档读历史列没有便宜路径」，改由
-  `final --history <json>` 手动喂入。
-
-## 云文档写入的纯文本风险（**真机实测，已自动转义**）
-值一律以 `opType:"formula"` 写入，故 `= + - @ '` 开头 / 前导零 / ≥16 位纯数字的文本会被当公式或数值 ——
-实测 `0012`→12、`=A1`→**被求真值**（变成 A1 单元格的内容）、`12345678901234567`→丢精度、`+86`→86，
-全部是**静默改写、不报错**。`to_kdocs_payload.py` 默认给这类值**前置一个单引号**：
-引擎把它当文本标记消费掉、**回读值不含引号**（无损），并列出命中项与原因；
-确需按公式写入才用 `--no-escape-risky-text`。
-（`create_file_with_content` 与 `sheet.update_range_data` 两条路径行为一致，均于 2026-09-11 实测。）
-
-## 解密（wcdb-key-tool，第三方灰色工具，不在 skill 内）
-- 准备：`git clone https://github.com/TANGandXUE/wcdb-key-tool scripts/tools/wcdb-key-tool`
-  或设环境变量 `WCDB_KEY_TOOL` 指向 `wcdb_key_tool_windows.py`；`common.find_wcdb_tool` 会自动找
-  （含家目录深度≤3 搜索）。**注意**：工具放在更深的目录里就找不到，此时用环境变量显式指定最稳。
-- ⚠️ 供应链注意：第三方灰色工具会随上游更新改变行为。clone 后记录所用 commit
-  （`git -C scripts/tools/wcdb-key-tool rev-parse HEAD`），后续解密异常先核对是否工具版本漂移。
-- **`extract` 必须显式传 `--db-dir`**：多账户机器上自动探测可能取到停用的那个账号（【真机】踩到）。
-- 口令缓存 `~/.wcdb-key-tool/wechat-passphrase.json`：有效时无需重登；缓存丢失则先 `extract`（**微信须前台**）。
-- 密钥缓存按账号隔离：`decrypt.py` 输出 `output/keys_<账号目录>.json`。
-- 解密结果里 `.factory\...\*.db` 这类是**历史备份副本**，拿不到密钥属正常（会 SKIP），不影响主库。
-- 合规：只读本机、数据不出电脑，使用前向用户确认。
-
 ## 两种表格来源（`excel.source`：local / kdocs）
+
 两条通道算法完全一致（列映射 / 判定规则 / payload 结构 / 岗位复用算法都不变），只换读表与回填的 I/O；
 差别只在**取数成本**：本地 openpyxl 读历史是免费的，云文档读历史太贵（见下「云文档读历史列没有便宜路径」）。
 
 ### 通道 A：local（本地 .xlsx）
+
 - 读：`probe.py workbook --workbook <xlsx>`（openpyxl）。
 - 追加起始行 + **岗位复用**：`build_matrix_rows.py final --workbook <xlsx>`（一次读表两用；复用零额外成本）。
 - 回填：editor_sdk（见下节）。
 
+### 回填（通道 A：editor_sdk / tencent-local-office-edit 技能）
+
+1. 先 Skill 加载 tencent-local-office-edit 拿 edsdk.py 路径；读 sheet.md。
+2. open_file → 按 `excel.sheet_match` 关键字匹配子表（不要写死年份）→ sheet_get_used_range 探边界；
+   追加起始行用 `common.next_append_row(<xlsx>, sheet_hint, mapping)`。
+3. 追加：sheet_insert_dimension(row, 末行+1, N) → sheet_set_range_value（每格必带 row/col/value_type
+   + string_value|number_value）→ 对 date_columns 设 number_format_pattern → save_file。
+4. ⚠️ 引擎保存会把旧 .xls 内容写成 xlsx：**保存后确认/改名为 .xlsx**，否则打开弹"格式与扩展名不匹配"。
+5. ⚠️ 文件被宿主预览/用户打开（"Export file is occupied"）：save_file 到临时路径 → close_file(force)
+   → 用 python 二进制覆写原文件内容（delete/rename 会被锁拒绝，写共享通常允许）；最后清理临时文件。
+6. 保存后不要主动 close_file（用户可能在看）；需改名/重开时再 close。
+
 ### 通道 B：kdocs（WPS 云文档）
+
 之所以必须多一层「快照」：连接器的 MCP 工具**只有 agent 能调，Python 脚本调不到**。所以：
+
 - 读：agent 调 `sheet.get_range_data` → 原始返回**原样**落 `raw_*.json` → `sheet_snapshot.py build`
   重建密集网格快照 → 脚本读快照。
 - 写：脚本产出 payload → `to_kdocs_payload.py` 转 `rangeData` → agent 调 `sheet.update_range_data`。
 
 读表**分两趟窄读**，别把整表搬进上下文：
+
 1. `sheet.get_sheets_info` 拿工作表清单 / `worksheet_id` / 已用区域上限。
 2. 第 1 趟只读前 3 行 × 全部列 → 认表头（目的是拿 `column_mapping`）。
 3. 第 2 趟按映射只读关键列（需求描述/提出时间/提出人/解决人…）→ 算末数据行。
@@ -130,7 +115,25 @@
    所以**绝不能**用它建"逐行的人→岗位"映射（真机实测：`N190:O193` 4 行 × 2 列只回 4 个值）。
    需要行级定位时必须用 `get_range_data`（每条自带 `rowFrom/colFrom`）。
 
+### 云文档接口契约（【真机】逐条实测）
+
+- 工作表参数名是 **`worksheet_id`**（不是 `sheetId`）。
+- 选区坐标 camelCase：`rowFrom/rowTo/colFrom/colTo` + `opType`；日期格式走 `xf.numfmt`。
+- **单次 `rangeData` 最多 100 条**，超出报 `length N exceeds limit 100` → `to_kdocs_payload.py` 自动分批。
+- **每条 `formula` op 只能写一个值**，N 个不同值就是 N 条 op，无法靠合并收敛；能合并的只有
+  `format`/`merge`/`picture` 这类区域操作。所以"6 行 × 18 列 ≈ 107 条 op"是正常量级。
+- `get_range_data` 返回**稀疏**数组（行列 0-based，只含有值的单元格）；range 覆盖多格时按"合并单元格"
+  语义整块填同一值。`build` 会重建成密集网格并裁掉尾部/右侧空行列。
+- **写入必须用 `update_range_data`（幂等、按坐标），不要用 `sheet.add_row`**（非幂等，重试会插多行脏数据）。
+- 写后**必须** `get_range_data` 回读核对，不能只信 `code: 0`。
+- 限频 `429001`/`429002`：批量写要合并（脚本已压同列连续行），命中限频按响应给的恢复时间等待，别立刻重试。
+- `.ksheet` 智能表格有字段类型（日期/单选等），写入形态与 `.xlsx` 不同。
+- 文档若设区域保护（`sheet.list_protection_ranges`），写入会失败。
+- 定位优先用**链接**（`get_share_info(link_id)`）；只给文件名要走 `search_files` 并**让用户确认**（同名风险）。
+- `raw_*.json` / `kdocs_update*.json` 是中间产物，流程结束要清理。
+
 ### 云文档读历史列没有便宜路径（2026-09 四条路逐条实测）
+
 岗位复用需要读 `提出人 + 提出人岗位` 两列的历史。四条路都实测过，结论是**都不可行**：
 
 | 路径 | 实测结果 |
@@ -147,40 +150,52 @@
 
 → 因此**云文档通道不做表内岗位复用**，改由 `final --history <json>` 手动喂入（agent 确有把握时才读）。
 
-接口契约（【真机】逐条实测）：
-- 工作表参数名是 **`worksheet_id`**（不是 `sheetId`）。
-- 选区坐标 camelCase：`rowFrom/rowTo/colFrom/colTo` + `opType`；日期格式走 `xf.numfmt`。
-- **单次 `rangeData` 最多 100 条**，超出报 `length N exceeds limit 100` → `to_kdocs_payload.py` 自动分批。
-- **每条 `formula` op 只能写一个值**，N 个不同值就是 N 条 op，无法靠合并收敛；能合并的只有
-  `format`/`merge`/`picture` 这类区域操作。所以"6 行 × 18 列 ≈ 107 条 op"是正常量级。
-- `get_range_data` 返回**稀疏**数组（行列 0-based，只含有值的单元格）；range 覆盖多格时按"合并单元格"
-  语义整块填同一值。`build` 会重建成密集网格并裁掉尾部/右侧空行列。
-- **写入必须用 `update_range_data`（幂等、按坐标），不要用 `sheet.add_row`**（非幂等，重试会插多行脏数据）。
-- 写后**必须** `get_range_data` 回读核对，不能只信 `code: 0`。
-- 限频 `429001`/`429002`：批量写要合并（脚本已压同列连续行），命中限频按响应给的恢复时间等待，别立刻重试。
-- `.ksheet` 智能表格有字段类型（日期/单选等），写入形态与 `.xlsx` 不同。
-- 文档若设区域保护（`sheet.list_protection_ranges`），写入会失败。
-- 定位优先用**链接**（`get_share_info(link_id)`）；只给文件名要走 `search_files` 并**让用户确认**（同名风险）。
-- `raw_*.json` / `kdocs_update*.json` 是中间产物，流程结束要清理。
+### 云文档的纯文本风险（【真机】实测，已自动转义）
 
-## 表格回填（本地通道：editor_sdk / tencent-local-office-edit 技能）
-1. 先 Skill 加载 tencent-local-office-edit 拿 edsdk.py 路径；读 sheet.md。
-2. open_file → 按 `excel.sheet_match` 关键字匹配子表（不要写死年份）→ sheet_get_used_range 探边界；
-   追加起始行用 `common.next_append_row(<xlsx>, sheet_hint, mapping)`。
-3. 追加：sheet_insert_dimension(row, 末行+1, N) → sheet_set_range_value（每格必带 row/col/value_type
-   + string_value|number_value）→ 对 date_columns 设 number_format_pattern → save_file。
-4. ⚠️ 引擎保存会把旧 .xls 内容写成 xlsx：**保存后确认/改名为 .xlsx**，否则打开弹"格式与扩展名不匹配"。
-5. ⚠️ 文件被宿主预览/用户打开（"Export file is occupied"）：save_file 到临时路径 → close_file(force)
-   → 用 python 二进制覆写原文件内容（delete/rename 会被锁拒绝，写共享通常允许）；最后清理临时文件。
-6. 保存后不要主动 close_file（用户可能在看）；需改名/重开时再 close。
+值一律以 `opType:"formula"` 写入，故 `= + - @ '` 开头 / 前导零 / ≥16 位纯数字的文本会被当公式或数值 ——
+实测 `0012`→12、`=A1`→**被求真值**（变成 A1 单元格的内容）、`12345678901234567`→丢精度、`+86`→86，
+全部是**静默改写、不报错**。`to_kdocs_payload.py` 默认给这类值**前置一个单引号**：
+引擎把它当文本标记消费掉、**回读值不含引号**（无损），并列出命中项与原因；
+确需按公式写入才用 `--no-escape-risky-text`。
+（`create_file_with_content` 与 `sheet.update_range_data` 两条路径行为一致，均于 2026-09-11 实测。）
 
-## 易错点（操作提醒）
+## 岗位复用（`rules.reuse_position_column`）
+
+- **算法**：按行序向上找**同一提出人最近的岗位值**填补空缺；只填空缺，不覆盖更具体值（`--override` 才覆盖）。
+- **作用范围**：**历史行只读**，填充只发生在起始行起的行。
+- **时序**：2026-09 起**内置在 `final`**（历史区 = `[表头行+1, 起始行-1]`，复用发生在写
+  `final_rows.csv` **之前**），一轮写入即可完成；`position_reuse.py` 降级为独立补跑工具，
+  两者共用 `common.reuse_position_fill`。
+- ⚠️ 独立补跑时**必须显式说明"哪些行算本批新行"**（`--new-rows <final_rows.csv>` 或 `--start-row <首行号>`）：
+  默认模式无从判断——追加起始行 = 末数据行 + 1，从那里向下扫恒为空，只会得到 0 条；
+  表格尾部若还有空的"带格式行"，旧版本连提示都不打（静默无操作）。现已改为默认报错退出。
+- **孤儿尾行按预期保留**：只在非探针列（如项目编号）有值的尾行仍算有效数据行，本批从它**下方**追加
+  —— 宁可留一个空行，也绝不覆盖。要复用这类行需显式 `--start-row`。
+- **云文档不做表内复用**：读历史列的代价见上「云文档读历史列没有便宜路径」，改由
+  `final --history <json>` 手动喂入。
+
+## 判定规则（用户口径，可由 config.rules 开关）
+
+- 对方提出系统需求才算；寒暄/通知不算。拒绝或无实质回复 → 不写行。
+- **需求必须可交付**（能落成"改什么/修什么/加什么"）。**笼统抱怨不记**：只表达体感或情绪、指不出具体
+  对象的反馈（"系统特别卡/太慢了/不好用"）且我方未明确答复已解决 → 不写行（`rules.ignore_vague_complaints`）。
+  反之给出可定位对象或量化现象（哪个功能/哪一步操作/哪个单据，或"搜箱号要等15秒""审批后卡住"）→ 按 bug 记。
+  【真机】曾把群里一句「系统特别卡」（我方只回"稍等 重启系统"）记成 bug/完成，已据此规则修正。
+- 明确答"完成" → 计划时间=完成时间=答复日期。**运维动作与安抚不算完成**（重启系统/稍后看/换浏览器/
+  清缓存/再看看/我看看），不得据此记为完成 —— 这是上面那条真机记录的直接成因。
+- **提出时间 = 首次提出日**，不是我方答复日（真机曾把 09-09 的提出记成 09-10 的答复日）。
+- 数据修改类：没答完成也没拒绝 → 默认完成，时间取提出日期。
+- 同一需求多个会话都出现 → 合并一行，提出人取最早提出者。
+- 一条消息含多个需求 → 拆多行；解决人/责任人 = `people.handler`。
+- 单元格只放业务结果：**备注等列一律不写判定依据/分析过程**。
+
+## 易错点（跨主题）
+
 - **绝不静默改写已有数据**：拿不到"追加起始行"就报错退出。【真机】暴露过**四条**这类路径 ——
   空表头映射、`final` 兜底第 2 行、`position_reuse` 默认扫整表、以及「末数据行」判据双实现分歧
   （见上「列映射」）；现全部改为显式报错或显式 opt-in。
 - 名称重复联系人：contact 表一个 display 可能对应多个历史 username，取消息量最大者（export 已处理）。
 - 用户在 config 里点名的会话，若时间窗内无消息要**如实报告**（【真机】遇到点名的群两周没发言），
-  别默默产出空结果；让用户决定是否扩窗。会话多时不要用 AskUserQuestion 逐条问，写清单交用户勾选。
+  别默默产出空结果；让用户决定是否扩窗。
 - 子代理判定出入可能很大：`merged_preview.csv` 必须给用户裁决（删行/合并）后再回填。
-- 子代理输出 JSON 可能出现 `null` / 空串字段；脚本已做兜底，但裁决时也要扫一眼。
 - 大批量写值别逐格调；payload JSON 用 `ensure_ascii=False` 保持中文可读。

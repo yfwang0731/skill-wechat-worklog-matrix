@@ -7,7 +7,7 @@
 
 不绑定任何具体客户、项目或人员——服务对象、项目、会话、处理人全部由使用者通过 `config.json` 配置。
 
-当前版本 [`v1.0.0`](https://github.com/yfwang0731/skill-wechat-worklog-matrix/releases/tag/v1.0.0)　·　变更历史见 [`CHANGELOG.md`](CHANGELOG.md)
+当前版本 [`v1.0.1`](https://github.com/yfwang0731/skill-wechat-worklog-matrix/releases/tag/v1.0.1)　·　变更历史见 [`CHANGELOG.md`](CHANGELOG.md)
 
 ## 特性
 
@@ -96,8 +96,9 @@ git clone https://github.com/TANGandXUE/wcdb-key-tool scripts/tools/wcdb-key-too
 ## 设计与踩坑记录
 
 2026-09 在一台 Windows + 微信 4.1 + WPS 云文档上完整实跑过，暴露并修复了一批
-「**没有报错、却把数据改错了**」的问题。完整清单与原因分析在
-[`SKILL.md`](SKILL.md) 的「真机验证过的坑」与 [`references/workflow-notes.md`](references/workflow-notes.md)；
+「**没有报错、却把数据改错了**」的问题。执行所需的约束都写进了
+[`SKILL.md`](SKILL.md) 对应主题（云文档接口约束、岗位复用、微信库结构、判定规则）；
+机制推演与逐条实测见 [`references/workflow-notes.md`](references/workflow-notes.md)。
 这里只留三条最容易被忽略的结论：
 
 - **「末数据行」只能有一个判据**。探测（probe）与写入（final/position_reuse）曾各写一套，
@@ -116,7 +117,7 @@ git clone https://github.com/TANGandXUE/wcdb-key-tool scripts/tools/wcdb-key-too
 
 ```
 wechat-worklog-matrix/
-├── SKILL.md                    # 技能主文档：流程 / 判定规则 / 真机坑 / 速查表
+├── SKILL.md                    # 技能主文档：流程 / 表格通道 / 岗位复用 / 判定规则 / 速查表
 ├── CHANGELOG.md                # 完整开发过程（缘起 / 逐日变更 / 独立评测记录 / 设计不变量）
 ├── config.example.json         # 配置模板（复制为 config.json 后填写）
 ├── pipeline.py                 # 编排入口：probe（探测）/ run（解密→导出→分包）
@@ -133,7 +134,7 @@ wechat-worklog-matrix/
 │   └── smoke_test.py           #   自检：import + 纯函数断言
 └── references/
     ├── agent-prompt-zh.txt     # 需求识别子代理提示词模板
-    └── workflow-notes.md       # 工作流要点与坑位备忘
+    └── workflow-notes.md       # 机制说明与实测记录（SKILL.md 的详情层）
 ```
 
 ## 自检
