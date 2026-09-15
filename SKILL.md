@@ -44,6 +44,8 @@ agent_created: true
 5. **单元格只写业务结果**，禁止把判定依据/分析过程写进任何单元格（尤其备注列）。
 6. **表格 I/O 只走两条通道**（local / kdocs），算法不因通道而变；**绝不写死通道**——由 `config.excel.source` 决定。
 7. **绝不静默改写已有数据**：拿不到「追加起始行」就报错退出，不兜底、不猜。
+8. **只记可交付的需求**：能落成"改什么 / 修什么 / 加什么"的才叫需求。笼统抱怨与体感反馈
+   （"系统特别卡"）且我方未明确答复已解决的，不记 —— 台账是交付物，不是意见箱。
 
 ## 微信库结构（领域事实）
 
@@ -258,8 +260,8 @@ python scripts/build_matrix_rows.py final --preview <_out>/merged_preview.csv \
 | `{{业务系统描述}}` | `excel.business_system_description` |
 | `{{对方关键字}}` | `people.counterparty_keyword` |
 
-判定开关 `rules.*`（`ignore_if_rejected` / `ignore_if_no_reply` / `data_change_default_done`）
-按模板的【开关渲染表】注入：开 = 用现文，关 = 替换为表中替代句。
+判定开关 `rules.*`（`ignore_if_rejected` / `ignore_if_no_reply` / `ignore_vague_complaints` /
+`data_change_default_done`）按模板的【开关渲染表】注入：开 = 用现文，关 = 替换为表中替代句。
 
 ## 岗位复用（`rules.reuse_position_column`，默认开）
 
@@ -303,14 +305,22 @@ python scripts/build_matrix_rows.py final --preview merged_preview.csv --start-r
 ## 判定规则（对方提出 → 我方答复）
 
 生效方式：`merge_cross_session` / `similarity_threshold` / `near_days` 由 `build_matrix_rows` 代码读取；
-`ignore_if_rejected` / `ignore_if_no_reply` / `data_change_default_done` 是**判定提示词开关**，
-由执行代理按 `references/agent-prompt-zh.txt` 的【开关渲染表】注入（不入 pipeline 脚本）；
-`reuse_position_column` 控制岗位复用。把"忽略"类开关设为 `false`，会把被拒/无回复的需求也登记为待裁决行。
+`ignore_if_rejected` / `ignore_if_no_reply` / `ignore_vague_complaints` / `data_change_default_done`
+是**判定提示词开关**，由执行代理按 `references/agent-prompt-zh.txt` 的【开关渲染表】注入（不入 pipeline 脚本）；
+`reuse_position_column` 控制岗位复用。把"忽略"类开关设为 `false`，会把被拒/无回复/笼统抱怨的需求
+也登记为待裁决行（`outcome` 分别为 `rejected` / `no_reply` / `vague`）。
 
-- **只记**对方提出的、针对系统的需求；寒暄/通知/闲聊不算。
+- **只记**对方提出的、针对系统的需求；寒暄/通知/闲聊不算。需求**必须可交付** —— 能落成一句
+  "改什么 / 修什么 / 加什么"。
 - **我方明确拒绝**（不能做/做不了/不支持/你们自己改…）→ 忽略（`rules.ignore_if_rejected`）。
 - **提出后无实质回复** → 忽略（`rules.ignore_if_no_reply`）。
+- **笼统抱怨不算需求**（`rules.ignore_vague_complaints`）：只表达体感/情绪、**指不出具体对象**的反馈
+  （"系统特别卡 / 太慢了 / 又出问题了 / 不好用"），**且我方未明确答复已解决** → 忽略。
+  反之，给出了可定位对象或量化现象（哪个功能 / 哪一步操作 / 哪个单据，或"搜一个箱号要等15秒"
+  "审批后卡住"）→ 仍按 bug 记。
 - **明确答复完成**（好了/已完成/改好了/搞定/你试试…）→ 记行；计划时间 = 完成时间 = 答复日期。
+  注意**运维性动作与安抚不算完成**（重启系统 / 稍后看 / 换个浏览器 / 清缓存 / 再看看 / 我看看），
+  不得据此记为"完成"。
 - **数据修改类特例**（改费用/改单号/录补调数据/导数据…）：没答完成也没拒绝 → 默认已完成，
   时间取提出日期（`rules.data_change_default_done`）。
 - **同一需求跨会话出现** → 合并一行，提出人取最早提出者（`rules.merge_cross_session`）。

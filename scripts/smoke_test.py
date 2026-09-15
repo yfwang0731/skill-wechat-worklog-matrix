@@ -390,6 +390,41 @@ def smoke_position_reuse_openpyxl():
     assert gs.max_row == 3 and gs.cell(row=2, column=2).value == "客服"
 
 
+def smoke_rule_consistency():
+    """判定规则的三处一致性（防漂移）。
+
+    背景：`outcome` 在预览 CSV 里靠 `OUTCOME_LABEL` 翻中文，标签缺失只会**静默**显示英文原值；
+    规则开关同时出现在「config.example.json」「提示词开关渲染表」「SKILL.md」三处，
+    改名时漏改一处就会让执行代理渲染出错的提示词。两者都不抛异常，只能靠断言守。
+    """
+    import json
+    import re
+    from build_matrix_rows import OUTCOME_LABEL
+
+    root = os.path.dirname(HERE)
+    prompt = open(os.path.join(root, "references", "agent-prompt-zh.txt"), encoding="utf-8").read()
+    skill = open(os.path.join(root, "SKILL.md"), encoding="utf-8").read()
+    cfg = json.load(open(os.path.join(root, "config.example.json"), encoding="utf-8"))
+
+    m = re.search(r'"outcome"\s*:\s*"([^"]*)"', prompt)
+    assert m, "提示词模板里找不到 outcome 枚举"
+    enums = m.group(1).split("|")
+    assert len(enums) == len(set(enums)), f"outcome 枚举有重复: {enums}"
+    missing = [e for e in enums if e not in OUTCOME_LABEL]
+    assert not missing, f"OUTCOME_LABEL 缺少 {missing}（预览会显示英文原值）"
+
+    rules = cfg.get("rules") or {}
+    prompt_switches = set(re.findall(r"rules\.([a-z_]+)", prompt))
+    for k in ("ignore_if_rejected", "ignore_if_no_reply",
+              "ignore_vague_complaints", "data_change_default_done"):
+        assert k in rules, f"config.example.json 缺 rules.{k}"
+        assert k in prompt_switches, f"提示词开关渲染表缺 rules.{k}"
+        assert k in skill, f"SKILL.md 未提到 rules.{k}"
+
+    # 「笼统抱怨」规则的核心措辞必须真的在提示词里（不能只写在文档里）
+    assert "笼统抱怨" in prompt and "运维性动作与安抚不算完成" in prompt
+
+
 def main():
     full = "--full" in sys.argv
     print("== import 冒烟 ==")
@@ -409,6 +444,8 @@ def main():
     check("列解析/历史只读到 end_row/只填空缺/批内传播", smoke_reuse_position)
     print("== build_matrix_rows 单测 ==")
     check("norm_o/ids/QMAP", smoke_build)
+    print("== 判定规则一致性（防漂移）==")
+    check("outcome 标签 + 规则开关三处同步", smoke_rule_consistency)
     print("== position_reuse ==")
     check("import position_reuse", smoke_position_reuse)
     if full:

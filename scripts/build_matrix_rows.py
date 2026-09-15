@@ -206,7 +206,8 @@ PREVIEW_COLS = ["序号", "会话", "提出人", "提出人岗位", "提出时�
                 "影响级别", "优先级", "结果", "计划时间", "完成时间", "跨会话标记", "证据节选", "备注"]
 QMAP = {"优化或需求": "需求"}
 OUTCOME_LABEL = {"done": "答复完成", "default_done": "默认完成(数据修改)",
-                 "rejected": "已拒绝(记录)", "no_reply": "无回复(记录)", "pending": "未确认完成"}
+                 "rejected": "已拒绝(记录)", "no_reply": "无回复(记录)",
+                 "vague": "笼统抱怨(记录)", "pending": "未确认完成"}
 
 
 def cmd_preview(args):
