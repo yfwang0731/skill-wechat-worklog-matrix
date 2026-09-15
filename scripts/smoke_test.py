@@ -425,6 +425,48 @@ def smoke_rule_consistency():
     assert "笼统抱怨" in prompt and "运维性动作与安抚不算完成" in prompt
 
 
+def smoke_openpyxl_hint():
+    """缺 openpyxl 时必须给可执行的提示，而不是裸 ImportError。
+
+    用 meta_path 阻断器模拟"未安装"（不依赖真实卸载），测完恢复现场。
+    背景：本地表格通道的懒加载曾直接 `import openpyxl`，缺库抛裸 traceback，
+    而 zstandard 那条已有友好提示 —— 两处不对称，已收敛到 common.require_openpyxl。
+    """
+    import importlib.abc
+    from common import require_openpyxl
+
+    class _Block(importlib.abc.MetaPathFinder):
+        def find_spec(self, name, path=None, target=None):
+            if name == "openpyxl" or name.startswith("openpyxl."):
+                raise ImportError("blocked for test")
+            return None
+
+    blocker = _Block()
+    saved = {k: v for k, v in sys.modules.items()
+             if k == "openpyxl" or k.startswith("openpyxl.")}
+    for k in saved:
+        del sys.modules[k]
+    sys.meta_path.insert(0, blocker)
+    try:
+        try:
+            require_openpyxl()
+            raise AssertionError("缺 openpyxl 时未报错")
+        except SystemExit as e:
+            msg = str(e)
+            assert "pip install openpyxl" in msg, msg
+            assert "云文档通道" in msg, msg
+    finally:
+        sys.meta_path.remove(blocker)
+        sys.modules.update(saved)
+
+    # 真装了的话，正常路径应返回模块本身
+    try:
+        import openpyxl
+        assert require_openpyxl().__name__ == "openpyxl"
+    except ImportError:
+        pass
+
+
 def main():
     full = "--full" in sys.argv
     print("== import 冒烟 ==")
@@ -446,6 +488,8 @@ def main():
     check("norm_o/ids/QMAP", smoke_build)
     print("== 判定规则一致性（防漂移）==")
     check("outcome 标签 + 规则开关三处同步", smoke_rule_consistency)
+    print("== 依赖缺失时的提示 ==")
+    check("缺 openpyxl 给可执行提示（非裸 ImportError）", smoke_openpyxl_hint)
     print("== position_reuse ==")
     check("import position_reuse", smoke_position_reuse)
     if full:

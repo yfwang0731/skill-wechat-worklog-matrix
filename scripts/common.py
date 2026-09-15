@@ -164,9 +164,25 @@ def next_append_row_ws(ws, mapping=None, header_row=1):
     return last + 1
 
 
+def require_openpyxl():
+    """导入 openpyxl，缺库时给出可执行的提示，而不是裸 ImportError。
+
+    只有**本地表格通道**需要它（云文档通道走快照，不需要）。全 skill 仅此一处导入，
+    避免各脚本各写一份 try/except 导致提示不一致 —— 与 zstandard 那条的处理方式对齐。
+    """
+    try:
+        import openpyxl
+        return openpyxl
+    except ImportError:
+        raise SystemExit(
+            "✗ 本地表格通道需要 openpyxl，当前解释器未安装。\n"
+            "  安装：pip install openpyxl\n"
+            "  （只走云文档通道的话不需要它 —— 用 --snapshot / --history 即可。）")
+
+
 def next_append_row(workbook_path, sheet_hint="运维", mapping=None, header_row=1):
     """本地 xlsx 版本的追加起始行（依赖 openpyxl）。云文档通道请用 next_append_row_ws + 快照。"""
-    import openpyxl
+    openpyxl = require_openpyxl()
     wb = openpyxl.load_workbook(workbook_path)
     return next_append_row_ws(pick_sheet(wb, sheet_hint), mapping, header_row)
 

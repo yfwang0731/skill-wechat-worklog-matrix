@@ -24,7 +24,7 @@ import json, os, re, csv, argparse, difflib
 
 from common import (load_config, col_index, serial, pick_sheet, next_append_row_ws,
                     load_snapshot, workbook_from_snapshot, position_columns,
-                    read_history_positions, reuse_position_fill)
+                    read_history_positions, reuse_position_fill, require_openpyxl)
 
 # 岗位词表：用于从"提出人"文本里剥离岗位（可通过 config.post_words 覆盖/扩展）
 DEFAULT_POST_WORDS = ["商务经理", "商务", "客服", "接单客服", "财务", "调度", "前程操作",
@@ -328,7 +328,7 @@ def cmd_final(args):
     elif wb_path and os.path.isfile(wb_path):
         if wb_path.lower().endswith((".xls", ".xlt")):
             raise SystemExit(f"✗ openpyxl 不支持旧版 {wb_path}，请先另存为 .xlsx。")
-        import openpyxl
+        openpyxl = require_openpyxl()
         sheet = pick_sheet(openpyxl.load_workbook(wb_path), hint)
         src = f"工作簿 {os.path.basename(wb_path)}"
 

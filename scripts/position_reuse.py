@@ -40,7 +40,7 @@ import argparse
 
 from common import (load_config, load_snapshot, workbook_from_snapshot, pick_sheet,
                     next_append_row_ws, position_columns, read_history_positions,
-                    reuse_position_fill)
+                    reuse_position_fill, require_openpyxl)
 
 PERSON_KEY = "提出人"
 POST_KEY = "提出人岗位"
@@ -134,7 +134,7 @@ def main():
         print(f"[source] WPS 快照 {args.snapshot}"
               f"（worksheet_id={getattr(sheet, 'sheet_id', None)}）")
     elif args.workbook:
-        import openpyxl
+        openpyxl = require_openpyxl()
         from openpyxl.utils.exceptions import InvalidFileException
         # 旧版 .xls/.xlt 二进制格式 openpyxl 不支持（.xlsx/.xlsm/.xltx 可以）
         if args.workbook.lower().endswith((".xls", ".xlt")):

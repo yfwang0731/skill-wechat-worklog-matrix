@@ -31,6 +31,7 @@ agent_created: true
   本项目实测可用的隔离环境：`~/.workbuddy/binaries/python/envs/default`。
 - **`pip install openpyxl`** —— 仅**本地表格通道**需要；回填另需 `tencent-local-office-edit`。
   只支持 `.xlsx`/`.xlsm`，旧版 `.xls`/`.xlt` 会被 `probe` 拒绝（先「另存为 .xlsx」）。
+  缺库时会给出 `pip install openpyxl` 的明确提示，不会抛裸 `ImportError`。
 - **金山文档连接器** —— 仅**云文档通道**需要，不需要 openpyxl。
 - **wcdb-key-tool** —— 解密用，**第三方且不在 skill 内**。它是灰色工具（只读本机、数据不出电脑），
   **使用前须经用户确认**：

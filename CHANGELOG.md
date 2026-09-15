@@ -34,6 +34,11 @@
 - **文档把 `decrypt.py` 的参数写成了 `--db-dir`**：`--db-dir` 其实是**第三方 wcdb-key-tool 自己的参数**
   （由脚本内部透传），`decrypt.py` 的参数是 `--db-storage` —— 照文档手敲会被 argparse 拒绝。
   `SKILL.md` 与 `workflow-notes.md` 已更正，并写明两者的区别以免再混。
+- **缺 `openpyxl` 时抛裸 `ImportError`**：本地表格通道的懒加载直接 `import openpyxl`，缺库会打出一整段
+  traceback；而 `zstandard` 那条早已有友好提示，两处不对称。现收敛到**唯一入口**
+  `common.require_openpyxl()`（4 个调用点共用），缺库时提示 `pip install openpyxl`
+  并说明云文档通道不需要它。`smoke_test.py` 新增断言：用 `meta_path` 阻断器模拟"未安装"，
+  锁住"必须给可执行提示而非裸异常"这个行为（不依赖真实卸载）。
 
 ### Changed
 - 判定提示词新增总则：需求**必须可交付** —— 能落成一句"改什么 / 修什么 / 加什么"。

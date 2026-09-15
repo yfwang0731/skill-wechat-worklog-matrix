@@ -17,7 +17,7 @@ import sqlite3
 import argparse
 from datetime import datetime, timezone, timedelta
 
-from common import md5hex, col_index, col_letter, last_data_row_ws
+from common import md5hex, col_index, col_letter, last_data_row_ws, require_openpyxl
 
 TZ = timezone(timedelta(hours=8))
 
@@ -338,7 +338,7 @@ def cmd_workbook(args):
         wb = workbook_from_snapshot(load_snapshot(snap))
         result = analyze_workbook(wb, args.sheet, snap)
     else:
-        import openpyxl
+        openpyxl = require_openpyxl()
         from openpyxl.utils.exceptions import InvalidFileException
         # 旧版 .xls/.xlt 二进制格式 openpyxl 不支持（.xlsx/.xlsm/.xltx 可以）
         if args.workbook.lower().endswith((".xls", ".xlt")):
