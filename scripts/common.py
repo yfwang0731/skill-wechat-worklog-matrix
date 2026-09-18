@@ -423,8 +423,17 @@ def warn_if_inside_git_repo(path, what="产物"):
         root = os.path.abspath(pr.stdout.decode("utf-8", "replace").strip())
         if not root:
             return False
+        # ⚠ Windows 上 `TEMP` 常是 **8.3 短名**（形如 `...~1\AppData\Local\Temp`），
+        #   而 `git rev-parse --show-toplevel` 把仓库根归一成**长名** ——
+        #   两者字符串毫无共同前缀可言，于是 `commonpath` 会算成一个很浅的祖先目录
+        #   而不是仓库根，"在仓库内"被误判为"不在"，**告警静默失效**。
+        #   真事故：CI 的 `windows-latest` 上这条一直不生效，而本地 `TEMP` 恰好是长名
+        #   ⇒ 永远复现不了。`realpath` 会把短名展开成长名（Windows 上即 `GetLongPathName`），
+        #   两边都归一后再比；再用 `normcase` 抹掉盘符大小写差异。
+        root = os.path.realpath(root)
+        d = os.path.realpath(d)
         try:
-            if os.path.commonpath([root, d]) != root:
+            if os.path.normcase(os.path.commonpath([root, d])) != os.path.normcase(root):
                 return False
         except ValueError:                      # 不同盘符 → 必然不在同一仓库
             return False

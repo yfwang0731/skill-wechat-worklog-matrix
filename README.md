@@ -7,7 +7,7 @@
 
 不绑定任何具体客户、项目或人员——服务对象、项目、会话、处理人全部由使用者通过 `config.json` 配置。
 
-当前版本 [`v1.1.0`](https://github.com/yfwang0731/skill-wechat-worklog-matrix/releases/tag/v1.1.0)　·　变更历史见 [`CHANGELOG.md`](CHANGELOG.md)
+当前版本 [`v1.1.1`](https://github.com/yfwang0731/skill-wechat-worklog-matrix/releases/tag/v1.1.1)　·　变更历史见 [`CHANGELOG.md`](CHANGELOG.md)
 
 [![selftest](https://github.com/yfwang0731/skill-wechat-worklog-matrix/actions/workflows/selftest.yml/badge.svg)](https://github.com/yfwang0731/skill-wechat-worklog-matrix/actions/workflows/selftest.yml)
 

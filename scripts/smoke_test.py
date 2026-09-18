@@ -1987,7 +1987,15 @@ def smoke_doc_structure():
                      if x not in (".git", "README.md") and x not in listed]
     assert not unlisted_root, f"README 目录树漏列了根目录条目：{unlisted_root}（新增文件要同步）"
     for sub in ("scripts", "references"):
-        real = sorted(f for f in os.listdir(os.path.join(ROOT, sub)) if not f.startswith("."))
+        # 必须排除 `__pycache__`（与 .gitignore 及本函数其它三处一致）：
+        # 它是 **Python 运行时产物**，命令行里跑一次就会出现在 `scripts/` 下。
+        # 本文件的其余扫描都用 `d != "__pycache__"` 排除了它，**唯独这里漏了** ——
+        # 于是"有 __pycache__ 的机器"（如 GitHub Actions，它不设
+        # PYTHONDONTWRITEBYTECODE）会误报"README 漏列 __pycache__"。
+        # 本地之所以不报：托管 Python 环境设了 PYTHONDONTWRITEBYTECODE=1，
+        # 根本不生成它 —— 这正是**本地过、CI 挂**的环境差异。
+        real = sorted(f for f in os.listdir(os.path.join(ROOT, sub))
+                      if not f.startswith(".") and f != "__pycache__")
         miss = [f for f in real if f not in listed]
         assert not miss, f"README 目录树漏列 {sub}/：{miss}"
 
