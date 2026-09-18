@@ -22,7 +22,7 @@ import argparse
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, "scripts"))
 
-from common import load_config, find_wcdb_tool
+from common import load_config, find_wcdb_tool, ensure_utf8_stdio, is_placeholder
 
 
 def run(py, *cli):
@@ -70,7 +70,18 @@ def cmd_probe(args):
                                             or "./wechat_pilot"), "sheet_snapshot.json")
         if os.path.isfile(cand):
             snap = cand
-    if snap and os.path.isfile(snap):
+    if args.snapshot and not os.path.isfile(args.snapshot):
+        # 显式给了却不存在 → 明确报错，不要静默退化成"未提供表格来源"
+        sys.exit(f"✗ --snapshot 指定的快照不存在：{args.snapshot}")
+    if args.workbook and not os.path.isfile(args.workbook):
+        sys.exit(f"✗ --workbook 指定的工作簿不存在：{args.workbook}")
+    # 来自 config 的值：**占位符 = 没配置**（首次使用的正常状态，按"未提供"处理并说清楚）；
+    # 真实路径但不存在 = 配错了，probe 只读不写表，所以这里只提示不中止（final 才是硬报错）。
+    if wb and not os.path.isfile(wb):
+        why = ("还是 config.example.json 里的占位符" if is_placeholder(wb) else "指向的文件不存在")
+        print(f"⚠ config.excel.workbook {why}（{wb}）→ 视为未提供表格来源。")
+        wb = None
+    if snap:
         print("=" * 60)
         print("② 表格表头 → 列映射（WPS 云文档快照）")
         print("=" * 60)
@@ -80,7 +91,7 @@ def cmd_probe(args):
             print(f"  快照 {snap}")
             print(f"  子表「{wbj.get('sheet_selected')}」表头第 {wbj.get('header_row')} 行；"
                   f"列映射 {len(wbj.get('column_mapping', {}))} 项 → 追加起始行 {wbj.get('next_append_row')}")
-    elif wb and os.path.isfile(wb):
+    elif wb:
         print("=" * 60)
         print("② 表格表头 → 列映射（本地 xlsx）")
         print("=" * 60)
@@ -222,8 +233,10 @@ def main():
     sub = ap.add_subparsers(dest="cmd", required=True)
 
     p1 = sub.add_parser("probe", help="探测账户/会话/表头，一次性确认")
-    p1.add_argument("--workbook", default=None, help="本地 xlsx（本地通道）")
-    p1.add_argument("--snapshot", default=None, help="云文档快照 json（WPS 通道）")
+    # 与 probe.py / position_reuse.py 一致地互斥：两个来源同时给会让"到底读了哪个"变得不确定
+    p1src = p1.add_mutually_exclusive_group()
+    p1src.add_argument("--workbook", default=None, help="本地 xlsx（本地通道）")
+    p1src.add_argument("--snapshot", default=None, help="云文档快照 json（WPS 通道）")
     p1.add_argument("--since", default=None)
     p1.add_argument("--keyword", default=None)
     p1.add_argument("--dump", default=None, help="把探测结果写为 JSON")
@@ -241,4 +254,5 @@ def main():
 
 
 if __name__ == "__main__":
+    ensure_utf8_stdio()
     main()

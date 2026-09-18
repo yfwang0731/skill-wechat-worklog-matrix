@@ -9,7 +9,10 @@
 默认 transcripts=./wechat_pilot/transcripts，out=./wechat_pilot/transcripts/_out，n=6。
 """
 import os
+import sys
 import argparse
+
+from common import ensure_utf8_stdio, require_dir
 
 
 def file_weight(path):
@@ -29,6 +32,9 @@ def main():
 
     tx = a.transcripts or os.path.join(os.getcwd(), "wechat_pilot", "transcripts")
     out = a.out or os.path.join(tx, "_out")
+    # 先校验转录目录：否则下一行的 makedirs(out) 会**把打错的路径连带创建出来**，
+    # 然后扫到 0 个文件 —— 用户拿到的是一棵凭空冒出来的空目录树。
+    require_dir(tx, "转录目录（--transcripts）")
     os.makedirs(out, exist_ok=True)
 
     files = sorted(
@@ -36,8 +42,9 @@ def main():
         if f.endswith(".txt") and not f.startswith("#")
     )
     if not files:
-        print(f"✗ {tx} 下没有 .txt 转录文件，请先跑 export_conversations.py")
-        return
+        # 用 sys.exit 而不是 print+return：`pipeline.py run` 靠**退出码**判断这一步是否成功，
+        # 返回 0 会让"没有转录文件"被上层当成跑通了（打印 ✗ 却报成功的自相矛盾）。
+        sys.exit(f"✗ {tx} 下没有 .txt 转录文件，请先跑 export_conversations.py")
 
     n = max(1, a.n)
     # 按文件大小降序贪心分配到当前最轻的桶（比轮询更均衡：避免一个大文件压垮单个 agent）
@@ -59,4 +66,5 @@ def main():
 
 
 if __name__ == "__main__":
+    ensure_utf8_stdio()
     main()

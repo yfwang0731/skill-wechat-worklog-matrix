@@ -19,6 +19,17 @@ payload*.json
 merged_preview.csv
 final_rows.csv
 
+# 判定规则行为验证的产物（`rules_check.py plan`）
+# ⚠ prompt_rendered.txt 是**渲染后的完整提示词** —— 含处理人姓名、**我方标识（微信号）**、
+#   对方关键字、服务对象、业务系统描述。这是全流程里最敏感的文件之一。
+#   rules_check.py 的默认 --out 就是 <cwd>/rules_check_out，从仓库根目录跑会直接落进仓库。
+rules_check_out/
+prompt_rendered.txt
+rules_cases/
+
+# 产出契约校验报告（`preview` 写在 --out 同目录）—— 含 agent 文件名（真机带人名拼音）与违约值
+validation_report.txt
+
 # 编辑器 / 系统文件
 .vscode/
 .idea/

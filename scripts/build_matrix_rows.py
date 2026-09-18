@@ -17,14 +17,23 @@
 **岗位列复用已内置**：算出起始行后，从同一个表格来源读「历史区（表头下 ~ 起始行-1）」的
 提出人/岗位，把本批空岗位补齐，再写 final_rows.csv 与 payload.json —— 因此**一次写入即可完成**，
 不再需要"先写一遍、再跑 position_reuse 补一遍"。关闭方式：--no-reuse-position 或
-config.rules.reuse_position_column=false。云文档快照若不覆盖这两列数据区，会显式告警并跳过
-（可用 --history <json> 手动喂入）。
+config.rules.reuse_position_column=false。
+
+云文档通道同样支持表内复用，**前提是第 2 趟读表把关键列按行读全**（快照的 coverage 会记下实际
+覆盖范围，行够不到历史区时直接报错、列没覆盖到这两列时告警）。读不到时才用 `--history <json>` ——
+那个文件**要手写**，仓里没有生产者。
+
+**preview 会先校验子代理产出的契约**（形状/必填/值域/日期可解析四类硬拦，契约外字段名只告警），
+不合契约即报错退出，完整清单落 `<--out 同目录>/validation_report.txt`；**没有跳过开关**。
 """
 import json, os, re, csv, argparse, difflib
 
 from common import (load_config, col_index, serial, pick_sheet, next_append_row_ws,
-                    load_snapshot, workbook_from_snapshot, position_columns,
-                    read_history_positions, reuse_position_fill, require_openpyxl)
+                    load_snapshot, workbook_from_snapshot, snapshot_sheet_coverage,
+                    position_columns, warn_if_inside_git_repo,
+                    read_history_positions, reuse_position_fill, open_local_workbook,
+                    require_dir, require_file, is_placeholder, load_json_file,
+                    ensure_utf8_stdio)
 
 # 岗位词表：用于从"提出人"文本里剥离岗位（可通过 config.post_words 覆盖/扩展）
 DEFAULT_POST_WORDS = ["商务经理", "商务", "客服", "接单客服", "财务", "调度", "前程操作",
@@ -204,14 +213,183 @@ def flag_dups(rows, cfg):
 
 PREVIEW_COLS = ["序号", "会话", "提出人", "提出人岗位", "提出时间", "需求描述", "需求归类",
                 "影响级别", "优先级", "结果", "计划时间", "完成时间", "跨会话标记", "证据节选", "备注"]
+# final 会直接下标访问的列：缺一个就是旧格式/错文件，必须早报而不是崩在第 N 行
+PREVIEW_REQUIRED = ["序号", "提出人", "提出人岗位", "提出时间", "需求描述",
+                    "需求归类", "影响级别", "优先级", "计划时间", "完成时间"]
+
+# 「需求归类」的取值域 —— 2026-09-18 从线上台账「需求归类」列**实测 196 格**得到：
+# 数据处理 104 / bug 31 / 答疑 27 / 优化 24 / 需求 9。**优化与需求是并存的两种值**。
+# 加新取值前先核对真实模板（这列没有下拉校验，是自由文本，所以更需要白名单兜住）。
+Q_VALUES = ("数据处理", "优化", "需求", "bug", "答疑")
+# 子代理偶尔把「优化或需求」连写成一个值（提示词规则文本曾写成"需求或优化"所致），
+# 而台账里**没有**这个值 → 归一到「需求」。真机实测出现过 3 条，故保留该映射。
 QMAP = {"优化或需求": "需求"}
 OUTCOME_LABEL = {"done": "答复完成", "default_done": "默认完成(数据修改)",
                  "rejected": "已拒绝(记录)", "no_reply": "无回复(记录)",
                  "vague": "笼统抱怨(记录)", "pending": "未确认完成"}
 
+# ---- 判定子代理的产出契约（与 references/agent-prompt-zh.txt 的【输出】一节一一对应）----
+# 为什么要在 preview 里硬拦：子代理的错值不会当场报错，而是**一路顺到 final 写进台账**。
+# 旧实现只做宽松兜底（r.get(...)），字段拼错 / 枚举越界 / 日期写成 2026/9/5 都静默通过。
+AGENT_FIELDS = ("chat", "O", "N", "ask_date", "L", "Q", "R", "S",
+                "outcome", "v_date", "w_date", "evidence", "note")
+AGENT_REQUIRED = ("O", "L", "ask_date")      # 缺任一 → 对应单元格为空
+AGENT_R_VALUES = ("高", "中", "低")
+AGENT_S_VALUES = ("1", "2", "3", "4", "5")
+AGENT_DATE_FIELDS = ("ask_date", "v_date", "w_date")
+# 冒烟/示例产物里常见这些"不是子代理产出"的 json，不能按契约拦（payload 是 dict 而非数组）
+AGENT_NAME_RE = re.compile(r"^agent.*\.json$", re.I)
+
+
+def _agent_files(src):
+    """遍历 --src 下的 *.json。
+
+    返回 [(名字, 是否按契约强校验)]：`agent*.json` **无论如何**都要强校验
+    （叫这个名却写成 dict，是"该产出没产出"）；其余 json 只有**本身就是数组**时
+    才纳入校验（因为 load_agents 会把数组型 json 一并消费，见其实现）；
+    payload.json / payload_n.json 这类 dict 产物保持旧行为——跳过。
+    """
+    out = []
+    for fn in sorted(os.listdir(src)):
+        if not fn.lower().endswith(".json"):
+            continue
+        path = os.path.join(src, fn)
+        if AGENT_NAME_RE.match(fn):
+            out.append((fn, path, True))
+            continue
+        try:
+            with open(path, encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception:
+            out.append((fn, path, False))    # 解析失败留给下面统一报（可能是坏 agent 张冠李戴）
+            continue
+        if isinstance(data, list):
+            out.append((fn, path, True))
+    return out
+
+
+def validate_agents(src, report_path=None):
+    """校验 agent 产出契约，返回 (problems, warnings)。
+
+    problems = 会导致「写进台账的值是错的」或「静默失效」，**硬拦**；
+    warnings = 契约外的字段名，通常正是必填项缺失的前兆，**只告警**。
+
+    不提供 --skip-validation：与本项目既有立场一致（position_reuse 缺关键输入、final 拿不到
+    起始行都是直接报错退出）。真有个别行不想要，正常流程里本来就有裁决环节（preview 之后删行/合并）。
+    """
+    problems, warnings = [], []
+    for fn, path, strict in _agent_files(src):
+        try:
+            with open(path, encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception as e:
+            if strict:
+                problems.append({"kind": "JSON 无法解析", "where": fn, "msg": f"{type(e).__name__}: {e}"})
+            continue
+        if not isinstance(data, list):
+            if strict:
+                problems.append({"kind": "顶层不是数组", "where": fn,
+                                 "msg": f"实际是 {type(data).__name__}；子代理应写数组"})
+            continue
+        for n, r in enumerate(data, 1):
+            where = f"{fn}:{n}"
+            if not isinstance(r, dict):
+                problems.append({"kind": "元素不是对象", "where": where,
+                                 "msg": f"实际是 {type(r).__name__}"})
+                continue
+            for f in sorted(set(r) - set(AGENT_FIELDS)):
+                warnings.append({"kind": "契约外的字段名", "where": f"{where}:{f}",
+                                 "msg": "提示词改了实现没跟？通常正是必填项缺失的前兆"})
+            for f in AGENT_REQUIRED:
+                if not str(r.get(f) or "").strip():
+                    problems.append({"kind": f"缺必填 {f}", "where": f"{where}:{f}",
+                                     "msg": "空或缺失 → 该列会写成空格"})
+            q = str(r.get("Q") or "").strip()
+            if q and q not in Q_VALUES and q not in QMAP:
+                problems.append({"kind": "Q 取值越界", "where": f"{where}:Q",
+                                 "msg": f"{q!r} 不在取值域 {list(Q_VALUES)}（连写值会被归一，其余需核模板）"})
+            oc = str(r.get("outcome") or "").strip()
+            if oc not in OUTCOME_LABEL:
+                problems.append({"kind": "outcome 取值越界", "where": f"{where}:outcome",
+                                 "msg": f"{oc!r} 不在 {sorted(OUTCOME_LABEL)}"})
+            rv = str(r.get("R") or "").strip()
+            if rv and rv not in AGENT_R_VALUES:
+                problems.append({"kind": "R 取值越界", "where": f"{where}:R",
+                                 "msg": f"{rv!r} 不在 {list(AGENT_R_VALUES) + ['']}"})
+            sv = str(r.get("S") or "").strip()
+            if sv and sv not in AGENT_S_VALUES:
+                problems.append({"kind": "S 取值越界", "where": f"{where}:S",
+                                 "msg": f"{sv!r} 不在 {list(AGENT_S_VALUES) + ['']}"})
+            for f in AGENT_DATE_FIELDS:
+                v = str(r.get(f) or "").strip()
+                if v and not serial(v):
+                    problems.append({"kind": f"{f} 无法解析", "where": f"{where}:{f}",
+                                     "msg": f"{v!r} 解析不出日期 → 该格为空，且 final 会把这行沉到排序末尾"})
+    return problems, warnings
+
+
+def render_agent_report(problems, warnings, report_path=None):
+    """按「类别 × 文件」汇总：屏幕每类前 10 个具体位置，完整清单落 report_path。
+
+    截断只影响屏幕，不影响文件——上百行时一个共性字段拼错会刷满屏把关键信息淹掉。
+    """
+    buf = []
+    for title, items in (("✗ 必须修（会写进台账或静默失效）", problems),
+                         ("⚠ 建议修（不阻断）", warnings)):
+        if not items:
+            continue
+        buf.append(title)
+        groups = {}
+        for it in items:
+            groups.setdefault(it["kind"], []).append(it)
+        for kind in sorted(groups, key=lambda k: (-len(groups[k]), k)):
+            rows = groups[kind]
+            files = {}
+            for it in rows:
+                head = it["where"].split(":")[0]
+                files[head] = files.get(head, 0) + 1
+            detail = "、".join(f"{f}×{n}" for f, n in sorted(files.items()))
+            buf.append(f"  {kind}：{len(rows)} 处 —— {detail}")
+            for it in rows[:10]:
+                buf.append(f"      - {it['where']}  {it['msg']}")
+            if len(rows) > 10:
+                more = f"（其余 {len(rows) - 10} 处见完整清单）" if report_path else "（其余见上）"
+                buf.append(f"      … {more}")
+        buf.append("")
+    text = "\n".join(buf)
+    if text.strip():
+        print(text)
+    if report_path:
+        lines = ["# 判定子代理产出契约校验 —— 完整清单", ""]
+        for title, items in (("必须修", problems), ("建议修", warnings)):
+            lines.append(f"## {title}（{len(items)} 处）")
+            if not items:
+                lines.append("（无）")
+            for it in items:
+                lines.append(f"- [{it['kind']}] {it['where']} —— {it['msg']}")
+            lines.append("")
+        with open(report_path, "w", encoding="utf-8") as f:
+            f.write("\n".join(lines))
+    return text
+
 
 def cmd_preview(args):
     cfg = get_cfg(args)
+    require_dir(args.src, "转录目录（--src）")
+    # 契约校验必须在 load_agents **之前**：load_agents 遇到坏 json 只 print 后 skip，
+    # 错值会一路顺到 final 写进台账。报告落 --out 同目录的 validation_report.txt。
+    out_dir = require_dir(os.path.dirname(os.path.abspath(args.out)), "--out 所在目录")
+    report = os.path.join(out_dir, "validation_report.txt")
+    # 报告里会出现 agent 文件名与违约值（真机文件名含人名拼音）⇒ 落进仓库要提醒
+    warn_if_inside_git_repo(out_dir, "产出契约校验报告")
+    problems, warnings = validate_agents(args.src, report)
+    render_agent_report(problems, warnings, report)
+    if problems:
+        raise SystemExit(
+            f"✗ 判定产出有 {len(problems)} 处不合契约，已拒绝生成 preview。\n"
+            f"  完整清单：{report}\n"
+            "  请修子代理产出（或提示词）后重跑 —— 本命令**没有**跳过开关；\n"
+            "  个别行不想要，请在 preview 之后的裁决环节删行/合并。")
     rows = load_agents(args.src, cfg)
     flag_dups(rows, cfg)
     with open(args.out, "w", newline="", encoding="utf-8-sig") as f:
@@ -238,7 +416,24 @@ def cmd_final(args):
     handler = people.get("handler") or ""
     date_cols = set((cfg.get("excel", {}) or {}).get("date_columns") or [])
 
-    rows = list(csv.DictReader(open(args.preview, encoding="utf-8-sig")))
+    with open(require_file(args.preview, "预览 CSV（--preview）"), encoding="utf-8-sig") as f:
+        rdr = csv.DictReader(f)
+        # 列名取自 fieldnames 而不是 rows[0]：只剩表头（0 数据行）时前者仍有效，
+        # 后者会退化成空集合 → 误报"缺少必需列"，把"空表"说成"列不对"。
+        have = set(rdr.fieldnames or [])
+        rows = list(rdr)
+    lack = [c for c in PREVIEW_REQUIRED if c not in have]
+    if lack:
+        raise SystemExit(
+            f"✗ {args.preview} 缺少必需列 {lack}。\n"
+            f"  现有列：{sorted(have)}\n"
+            "  请确认传入的是 **probe 之后的 preview 产物**（列名如「提出人 / 提出时间 / 需求描述」）；"
+            "旧版产物用的是带列字母的列名（如「提出人O / 岗位N」），不能直接喂给 final。")
+    if not rows:
+        # 0 数据行时旧实现会安静地写出空 final_rows.csv + 空 payload 并 exit 0 ——
+        # 属"看起来跑了其实没做事"，与「绝不静默」冲突：明确说出来，让人去查上游。
+        raise SystemExit(f"✗ {args.preview} 只有表头、没有任何数据行 —— 没有可生成的行。\n"
+                         "  请确认 preview 的输入（_out 下的 agent_*.json）确实产出了行。")
     seqs = {r["序号"] for r in rows}
 
     # ---- remove 校验 ----
@@ -281,14 +476,18 @@ def cmd_final(args):
                     continue
                 if not str(base.get(k) or "").strip() and str(v or "").strip():
                     base[k] = v
-            base["备注"] = (base.get("备注") or "") + f" [并入原#{b}]"
+            # 这里**不**往 备注 里写「并入原#b」：备注列一律只放业务内容，
+            # 且 final 随后会把备注清空，写了也落不了地（合并信息由下面那行 stdout 给出）。
         print(f"[merge] {len(merge_map)} 对：{', '.join(sorted(f'{b}→{a}' for b, a in merge_map.items()))}（b 补充字段已并入 a）")
     keep = list(keep_map.values())
 
     # 逻辑列名 -> 值
     final = []
+    bad_q = {}
     for r in keep:
         q = QMAP.get(r["需求归类"], r["需求归类"] or "")
+        if q and q not in Q_VALUES and q not in bad_q:
+            bad_q[q] = r["序号"]
         row = dict(defaults)          # 先铺默认值（项目编号/项目名称/固定列）
         row["需求描述"] = (r["需求描述"] or "").strip()
         row["提出时间"] = serial(r["提出时间"])
@@ -306,6 +505,12 @@ def cmd_final(args):
         row["备注"] = ""              # 默认留空：不写判定/分析过程
         final.append(row)
 
+    if bad_q:
+        print("⚠ 以下「需求归类」不在台账现有取值域 " + str(list(Q_VALUES)) +
+              " 内，会**原样写入**，请核对是否该归一：")
+        for v, seq in sorted(bad_q.items()):
+            print(f"    #{seq}  {v!r}")
+
     final.sort(key=lambda x: x.get("提出时间") if isinstance(x.get("提出时间"), int) else 10 ** 9)
 
     outdir = args.out_dir or os.path.dirname(args.preview)
@@ -321,15 +526,27 @@ def cmd_final(args):
     header_row_cfg = int(excel_cfg.get("header_row") or 1)
     snap = getattr(args, "snapshot", None)
     wb_path = args.workbook or excel_cfg.get("workbook")
-    sheet, src = None, None
-    if snap and os.path.isfile(snap):
-        sheet = pick_sheet(workbook_from_snapshot(load_snapshot(snap)), hint)
+    # 表格来源校验分两类，判据是**意图强度**不是"文件在不在"：
+    #   * 命令行显式给出 → 强意图：不存在就报错，绝不退回 config.excel.start_row
+    #     （曾把"路径打错"当成"没给来源"：两个分支都不进 → 起点静默改用 config 值，
+    #       并且以 exit 0 产出 payload，与本节"拿不到起始行就报错退出"的原则冲突。）
+    #   * 来自 config 且是 `<...>` 占位符 → 是"没配置"（首次使用的正常状态），告警后按未提供处理
+    #   * 来自 config 的真实路径 → 已配置：不存在即报错（岗位复用也要读它，静默跳过会改结果）
+    if snap:
+        require_file(snap, "快照（--snapshot）")
+    if args.workbook:
+        require_file(args.workbook, "工作簿（--workbook）")
+    sheet, src, snap_cov = None, None, None
+    if snap:
+        snap_obj = load_snapshot(snap)
+        sheet = pick_sheet(workbook_from_snapshot(snap_obj), hint)
+        snap_cov = snapshot_sheet_coverage(snap_obj, sheet.title)
         src = f"云文档快照 {os.path.basename(snap)}"
-    elif wb_path and os.path.isfile(wb_path):
-        if wb_path.lower().endswith((".xls", ".xlt")):
-            raise SystemExit(f"✗ openpyxl 不支持旧版 {wb_path}，请先另存为 .xlsx。")
-        openpyxl = require_openpyxl()
-        sheet = pick_sheet(openpyxl.load_workbook(wb_path), hint)
+    elif wb_path and is_placeholder(wb_path):
+        print(f"⚠ config.excel.workbook 还是 config.example.json 里的占位符"
+              f"（{wb_path}）→ 视为未提供表格来源。")
+    elif wb_path:
+        sheet = pick_sheet(open_local_workbook(wb_path), hint)
         src = f"工作簿 {os.path.basename(wb_path)}"
 
     start = None
@@ -338,7 +555,7 @@ def cmd_final(args):
         print(f"[start-row] 显式指定 = {start}")
     elif sheet is not None:
         start = next_append_row_ws(sheet, mapping, excel_cfg.get("header_row") or 1)
-        print(f"[start-row] 由{src}自动计算 = {start}")
+        print(f"[start-row] 由 {src} 自动计算 = {start}")
     elif excel_cfg.get("start_row"):
         start = int(excel_cfg["start_row"])
         print(f"[start-row] 取自 config.excel.start_row = {start}")
@@ -364,11 +581,30 @@ def cmd_final(args):
         if not (mapping.get("提出人") and mapping.get("提出人岗位")):
             print(f"⚠ column_mapping 缺「提出人/提出人岗位」，复用退回默认列位"
                   f"（提出人=第{col_person}列, 岗位=第{col_post}列）。")
+        # ---- 快照覆盖范围的两条检查（只在要复用时才做：不复用时数据区根本不参与计算）----
+        # 判据来自 build 写进快照的 coverage（裁边前的原始极值）。旧快照没有该字段 → 跳过，不误报。
+        if snap_cov:
+            cov_row_to, cov_col_to = snap_cov.get("rowTo"), snap_cov.get("colTo")
+            if cov_row_to is not None and (int(cov_row_to) + 1) < start - 1:
+                # 确定错误：读回来的行数够不到历史区，绝不可能复用出岗位
+                raise SystemExit(
+                    f"✗ 快照只覆盖到第 {int(cov_row_to) + 1} 行，而追加起始行是第 {start} 行 ——\n"
+                    f"  它**不可能**包含历史区（第 {header_row_cfg + 1}~{start - 1} 行）"
+                    "，岗位复用无从下手。\n"
+                    "  通常说明「第 2 趟读表」没做，或 rowTo 没读到表末。请按 SKILL.md"
+                    "「WPS 通道读表」把关键列**按行读全**后重建快照；\n"
+                    "  确实不需要岗位复用时，加 --no-reuse-position 跳过本检查，"
+                    "或直接用 --start-row-excel 而不要带快照。")
+            if cov_col_to is not None and (int(cov_col_to) + 1) < col_post:
+                # 两可：可能没读这两列，也可能读到了但该列在历史区里本来就全空
+                print(f"⚠ 快照最右只到第 {int(cov_col_to) + 1} 列，而「提出人岗位」在第 {col_post} 列"
+                      f"（「提出人」第 {col_person} 列）→ 本次读表没覆盖这两列，岗位复用无从下手。\n"
+                      "  请在第 2 趟读表时把这两列纳入 letters / colFrom-colTo，再重建快照。")
         hist = None
         if getattr(args, "history", None):
-            with open(args.history, encoding="utf-8") as f:
-                hist = {str(k).strip(): str(v).strip()
-                        for k, v in ((json.load(f) or {}).get("positions") or {}).items()}
+            hist = {str(k).strip(): str(v).strip()
+                    for k, v in ((load_json_file(args.history, "历史岗位 JSON（--history）")
+                                  or {}).get("positions") or {}).items()}
             print(f"[reuse] 历史岗位取自 --history（{len(hist)} 人）")
         elif sheet is not None:
             hist, pairs = read_history_positions(sheet, header_row_cfg, start - 1,
@@ -376,8 +612,10 @@ def cmd_final(args):
             print(f"[reuse] 读历史区第 {header_row_cfg + 1}~{start - 1} 行 → "
                   f"{len(hist)} 人 / {pairs} 对")
             if not pairs:
-                print("  ⚠ 历史区没有「提出人+岗位」成对数据：表格来源可能只含表头行"
-                      "（云文档快照常见，见 SKILL.md「WPS 通道读表」）。本批不补岗位。")
+                print("  ⚠ 历史区没有「提出人+岗位」成对数据 —— 三种可能，请对照刚才的 [reuse] 行数判断：\n"
+                      "    ① 快照/工作簿只读了表头行（行没读全，见上方 coverage 检查与 SKILL.md「WPS 通道读表」）；\n"
+                      "    ② 读到了这两列，但历史区里确实从没填过岗位（这时复用本来就救不了）；\n"
+                      "    ③ 只给了 --start-row-excel。本批不补岗位。")
         else:
             print("⚠ 跳过岗位复用：未提供 --workbook/--snapshot，读不到历史岗位。"
                   "需要时请给表格来源，或用 --history <json> 传入。")
@@ -418,6 +656,7 @@ def cmd_final(args):
 
 
 if __name__ == "__main__":
+    ensure_utf8_stdio()
     ap = argparse.ArgumentParser()
     sub = ap.add_subparsers(dest="cmd", required=True)
     p1 = sub.add_parser("preview")
@@ -439,8 +678,9 @@ if __name__ == "__main__":
     rs.add_argument("--no-reuse-position", dest="reuse_position", action="store_false",
                     help="本次跳过岗位列复用")
     p2.add_argument("--history", default=None,
-                    help='手动喂入历史岗位 json（形如 {"positions":{"人名":"岗位"}}）；'
-                         "云文档快照不含 N/O 列数据区时用这个通道")
+                    help='历史岗位 json（形如 {"positions":{"人名":"岗位"}}）。**要你自己手写** ——'
+                         "仓里没有任何脚本会生成这个文件；表内能读到历史时（两条通道都行，"
+                         "云文档需第 2 趟把行读全）不要用它")
     p2.add_argument("--config", default=None)
     a = ap.parse_args()
     if a.cmd == "preview":

@@ -8,11 +8,40 @@
 """
 import os
 import re
+import sys
 import json
 import hashlib
+import subprocess
 from datetime import date
 
 SKILL_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+# ---------------- 控制台编码 ----------------
+def ensure_utf8_stdio():
+    """把 stdout / stderr 切到 UTF-8，并尽量把 Windows 控制台也切过去。
+
+    本 skill 的输出**全是中文**，而 Windows 上 Python 的标准流编码跟随控制台代码页
+    （实测 GitHub 的 `windows-latest` runner 是 **cp1252**）：一 `print` 中文就
+    `UnicodeEncodeError: 'charmap' codec can't encode ...`，**第一行输出就崩**。
+    ubuntu / git-bash 都是 UTF-8，所以这个坑只在 Windows 上炸，本地极易漏。
+    编码问题不该让工具崩掉 —— 显式切到 UTF-8 + `errors="replace"`。
+
+    每个 `__main__` 入口都要在**任何输出之前**调用它（含 `smoke_test.py`）。
+    CI 里**故意不设** `PYTHONUTF8` / `PYTHONIOENCODING`，否则就把这个缺陷盖住了。
+    """
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:      # 流被替换过 / 不支持 reconfigure → 忽略，不影响主流程
+            pass
+    if os.name == "nt":
+        # 让 cmd.exe / PowerShell 也按 UTF-8 解释这些字节，否则中文显示为乱码（等价于 chcp 65001）
+        try:
+            import ctypes
+            ctypes.windll.kernel32.SetConsoleOutputCP(65001)
+        except Exception:      # 无内核接口 / 非交互环境（CI 管道）
+            pass
 
 
 # ---------------- 配置 ----------------
@@ -24,8 +53,8 @@ def load_config(path=None):
              os.path.join(SKILL_ROOT, "config.json")]
     for p in cands:
         if p and os.path.isfile(p):
-            with open(p, encoding="utf-8") as f:
-                return json.load(f), p
+            # 走统一守卫：配置文件写坏（漏逗号之类）时给可执行提示，而不是裸 JSONDecodeError
+            return load_json_file(p, "config 文件"), p
     return None, None
 
 
@@ -180,11 +209,74 @@ def require_openpyxl():
             "  （只走云文档通道的话不需要它 —— 用 --snapshot / --history 即可。）")
 
 
-def next_append_row(workbook_path, sheet_hint="运维", mapping=None, header_row=1):
-    """本地 xlsx 版本的追加起始行（依赖 openpyxl）。云文档通道请用 next_append_row_ws + 快照。"""
+# ---------------- 输入路径守卫（唯一入口）----------------
+# 用户把路径敲错是最高频的输入错误，而 `open()` / `load_workbook()` 抛的是
+# FileNotFoundError —— 裸 traceback 对使用者毫无帮助。这几条守卫全 skill 共用一份，
+# 与 require_openpyxl 同一思路：同一件事只留一个实现。
+def is_placeholder(path):
+    """config.example.json 里满是 `<...>` 占位符 —— 照抄没改的情形要认出来。
+
+    判据：整串就是 `<...>`。**占位符 = 没配置**，与"配了一个错的路径"是两回事：
+    前者应当按"未提供"处理（首次使用时的正常状态），后者才该报错。
+    """
+    s = str(path or "").strip()
+    return s.startswith("<") and s.endswith(">") and len(s) > 2
+
+
+def require_file(path, what="文件"):
+    """路径缺失/不是文件 → SystemExit + 可执行提示（不抛裸 traceback）。"""
+    if not path:
+        raise SystemExit(f"✗ 未提供{what}路径。")
+    if is_placeholder(path):
+        raise SystemExit(f"✗ {what} 还是占位符：{path}\n"
+                         "  请把 config.example.json 里的 <...> 替换成真实路径。")
+    if not os.path.isfile(path):
+        raise SystemExit(f"✗ {what}不存在：{path}\n"
+                         "  请检查路径是否写错（相对路径按**当前工作目录**解析）。")
+    return path
+
+
+def require_dir(path, what="目录"):
+    """目录缺失 → SystemExit + 可执行提示。"""
+    if not path:
+        raise SystemExit(f"✗ 未提供{what}路径。")
+    if is_placeholder(path):
+        raise SystemExit(f"✗ {what} 还是占位符：{path}\n"
+                         "  请把 config.example.json 里的 <...> 替换成真实路径。")
+    if not os.path.isdir(path):
+        raise SystemExit(f"✗ {what}不存在或不是目录：{path}\n"
+                         "  请检查路径是否写错（相对路径按**当前工作目录**解析）。")
+    return path
+
+
+def load_json_file(path, what="JSON 文件"):
+    """读 JSON：路径不存在 / 不是合法 JSON 都给可执行提示。"""
+    require_file(path, what)
+    try:
+        with open(path, encoding="utf-8") as f:
+            return json.load(f)
+    except json.JSONDecodeError as e:
+        raise SystemExit(f"✗ {path} 不是合法 JSON（{e}）。")
+
+
+def open_local_workbook(path):
+    """打开本地 xlsx 工作簿，三类失败都给可执行提示。
+
+    顺序有意为之：**先判存在与扩展名，再要 openpyxl** —— 否则用户既打错路径又没装库时，
+    看到的是"请装 openpyxl"，而真正的问题是路径写错了。
+    `.xls/.xlt` 是旧版二进制格式，openpyxl 不支持，与是否安装无关，所以也放在前面。
+    """
+    p = require_file(path, "工作簿")
+    if p.lower().endswith((".xls", ".xlt")):
+        raise SystemExit(f"✗ {p} 是旧版格式，openpyxl 不支持。"
+                         "请先用 Excel/WPS 把工作簿「另存为 .xlsx」再运行。")
     openpyxl = require_openpyxl()
-    wb = openpyxl.load_workbook(workbook_path)
-    return next_append_row_ws(pick_sheet(wb, sheet_hint), mapping, header_row)
+    from openpyxl.utils.exceptions import InvalidFileException
+    try:
+        return openpyxl.load_workbook(p)
+    except InvalidFileException as e:
+        raise SystemExit(f"✗ 无法以 .xlsx 解析 {p}（{e}）。"
+                         "若是旧版 .xls，请先另存为 .xlsx 再运行。")
 
 
 # ---------------- 表格快照（云文档 / WPS 通道）----------------
@@ -310,6 +402,59 @@ def load_snapshot(path):
         return json.load(f)
 
 
+def warn_if_inside_git_repo(path, what="产物"):
+    """产物目录落在**某个 git 仓库内**时打醒目告警；返回是否命中。
+
+    起因：`rules_check.py plan` 的默认 `--out` 是 `<cwd>/rules_check_out`，从仓库根目录跑一次，
+    就把**含真实标识**的产物（渲染后的提示词里有我方标识=微信号等）写进了仓库 —— 而未跟踪、
+    也未忽略的目录**不会出现在 `.gitignore` 的检查里**，`git add -A` 会顺手带走。
+    `.gitignore` 只能堵住**已知名字**，这里补一道"落到仓库里就说一声"，给新产物兜底。
+
+    刻意做成**非致命**：git 不存在 / 不是仓库 / 跨盘符 → 静默返回 False。
+    告警机制本身失败，绝不能影响主流程。
+    """
+    try:
+        want = os.path.abspath(path)            # 用户**想写**的落点（可能还不存在）
+        d = want if os.path.isdir(want) else (os.path.dirname(want) or os.getcwd())
+        pr = subprocess.run(["git", "-C", d, "rev-parse", "--show-toplevel"],
+                            capture_output=True, timeout=15)
+        if pr.returncode != 0:
+            return False
+        root = os.path.abspath(pr.stdout.decode("utf-8", "replace").strip())
+        if not root:
+            return False
+        try:
+            if os.path.commonpath([root, d]) != root:
+                return False
+        except ValueError:                      # 不同盘符 → 必然不在同一仓库
+            return False
+    except Exception:                           # 没装 git / 超时 / 权限
+        return False
+    rel = os.path.relpath(want, root).replace(os.sep, "/")
+    print(f"⚠ {what}落在 git 仓库内（{root} 下的 {rel}）：内容含真实标识，**不要入库**。\n"
+          "  请确认 .gitignore 已覆盖它；或把 --out 指到仓库外的目录。")
+    return True
+
+
+def snapshot_sheet_coverage(snap, sheet_name=None):
+    """取快照里某子表「本次读表**实际覆盖**到的行列范围」（0-based，含端点）。
+
+    为什么需要它：kdocs 回包**不带请求范围**（只有稀疏的 rangeData，没值的格根本不出现），
+    所以快照无法自证"我请求了多大范围"，只能自证"我看到了哪里"。
+    `sheet_snapshot.py build` 会把累加器的原始极值（**裁边之前**）写进 `coverage` ——
+    这正是判断"本次读表有没有覆盖到数据区 / 岗位列"的判据（裁边后的 max_row/max_column
+    会被尾部空行、右侧空列缩小，用它判断会误报）。
+
+    找不到 coverage（旧快照 / 手工构造的）返回 None，调用方据此跳过检查、不误报。
+    """
+    for s in (snap or {}).get("sheets") or []:
+        if sheet_name is not None and (s.get("name") or "") != sheet_name:
+            continue
+        cov = s.get("coverage")
+        return cov if isinstance(cov, dict) else None
+    return None
+
+
 def workbook_from_snapshot(snap):
     """快照 dict -> GridWorkbook。"""
     sheets = []
@@ -325,12 +470,6 @@ def workbook_from_snapshot(snap):
         raise ValueError("快照里没有任何工作表（sheets 为空）：请先按 SKILL.md 的"
                          "「WPS 通道读表」把 kdocs 返回存成 raw.json 再 build。")
     return GridWorkbook(sheets)
-
-
-def next_append_row_snapshot(snapshot_path, sheet_hint="运维", mapping=None, header_row=1):
-    """快照版本的追加起始行（不依赖 openpyxl）。"""
-    wb = workbook_from_snapshot(load_snapshot(snapshot_path))
-    return next_append_row_ws(pick_sheet(wb, sheet_hint), mapping, header_row)
 
 
 # ---------------- 岗位列复用（final 与 position_reuse 共用这一套）----------------
@@ -400,6 +539,7 @@ def reuse_position_fill(new_rows, last_post, person_key="提出人", post_key="�
 
 
 if __name__ == "__main__":
+    ensure_utf8_stdio()
     cfg, path = load_config()
     print("config:", path or "(未找到 config.json，请先从 config.example.json 复制)")
     print("db_storage:", find_db_storage())

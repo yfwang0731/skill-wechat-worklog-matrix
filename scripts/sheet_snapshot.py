@@ -41,7 +41,8 @@ from datetime import datetime, timezone, timedelta
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from common import merge_range_data, store_to_rows, col_index, workbook_from_snapshot
+from common import (merge_range_data, store_to_rows, col_index, workbook_from_snapshot,
+                    load_json_file, ensure_utf8_stdio)
 
 TZ = timezone(timedelta(hours=8))
 
@@ -138,6 +139,16 @@ def cmd_build(args):
             "worksheet_id": ws_id,
             "num_formats": store.get("num_formats") or {},
             "rows": rows,
+            # 本次读表**实际覆盖**的范围（0-based 含端点，**裁边之前**的原始极值）。
+            # kdocs 回包不带请求范围，所以只能记"看到了哪里"；但足以判定两件事：
+            #   ① 行有没有覆盖到数据区（快照 rowTo+1 < 追加起始行-1 ⇒ 显然没读到）
+            #   ② 列有没有覆盖到 提出人/提出人岗位（否则岗位复用无从下手）
+            # 用"裁边前"的极值而不是 rows 的实际长宽：尾部空行 / 右侧空列会被裁掉，
+            # 拿裁边后的值判断会把这些情况误报成"没读到"。见 common.snapshot_sheet_coverage。
+            "coverage": {"rowFrom": 0, "rowTo": store.get("max_row"),
+                         "colFrom": 0, "colTo": store.get("max_col")},
+            "trimmed": {"rows": len(rows),
+                        "cols": max((len(r) for r in rows), default=0)},
         })
 
     if not sheets_out:
@@ -169,7 +180,7 @@ def cmd_build(args):
 
 
 def cmd_inspect(args):
-    snap = json.load(open(args.snapshot, encoding="utf-8"))
+    snap = load_json_file(args.snapshot, "快照（--snapshot）")
     wb = workbook_from_snapshot(snap)
     print(f"[snapshot] {args.snapshot}")
     print(f"  source={snap.get('source')}  拉取时间={snap.get('fetched_at')}")
@@ -254,7 +265,9 @@ def main():
                     help="kdocs sheet.get_range_data 的返回文件（可多次 --raw 合并）")
     p1.add_argument("--out", required=True)
     p1.add_argument("--sheet", default=None, help="快照里子表的名字（也是后续 sheet_match 匹配用）")
-    p1.add_argument("--worksheet-id", "--sheet-id", dest="worksheet_id", default=None)
+    # type=int：连接器返回的 worksheet_id 本就是整数；不收成 int 会让"快照里是 7、config 里是 7"
+    # 两条来源类型不一致（写回请求体也跟着变），故在这里就统一。
+    p1.add_argument("--worksheet-id", "--sheet-id", dest="worksheet_id", type=int, default=None)
     p1.add_argument("--file-id", default=None)
     p1.add_argument("--drive-id", default=None)
     p1.add_argument("--name", default=None, help="文档名（仅记录，便于人眼核对）")
@@ -264,7 +277,7 @@ def main():
 
     p3 = sub.add_parser("plan", help="打印建议的 kdocs 读表调用体")
     p3.add_argument("--file-id", default=None)
-    p3.add_argument("--worksheet-id", "--sheet-id", dest="worksheet_id", default=None)
+    p3.add_argument("--worksheet-id", "--sheet-id", dest="worksheet_id", type=int, default=None)
     p3.add_argument("--rows", type=int, default=None, help="表的大致总行数")
     p3.add_argument("--cols", type=int, default=None, help="表的大致总列数")
     p3.add_argument("--letters", default=None, help="第 2 趟要读的列字母，逗号分隔，如 C,N,O")
@@ -279,4 +292,5 @@ def main():
 
 
 if __name__ == "__main__":
+    ensure_utf8_stdio()
     main()

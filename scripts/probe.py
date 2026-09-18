@@ -17,7 +17,8 @@ import sqlite3
 import argparse
 from datetime import datetime, timezone, timedelta
 
-from common import md5hex, col_index, col_letter, last_data_row_ws, require_openpyxl
+from common import (md5hex, col_index, col_letter, last_data_row_ws, load_json_file,
+                    open_local_workbook, ensure_utf8_stdio)
 
 TZ = timezone(timedelta(hours=8))
 
@@ -306,7 +307,10 @@ def analyze_workbook(wb, sheet_selector, label):
                 freq[str(v).strip()] = freq.get(str(v).strip(), 0) + 1
         for k, v in sorted(freq.items(), key=lambda x: -x[1])[:3]:
             handler_candidates.append({"field": logic, "value": k, "count": v})
-        break
+        # 只有**真的取到了**候选才停：这一列存在但整列为空时，要继续试下一种列名
+        # （否则「解决人」有列无值就把「责任人」有值的候选一起吞掉）
+        if handler_candidates:
+            break
 
     date_cols = [mapping[k] for k in DATE_FIELDS if k in mapping]
 
@@ -331,24 +335,11 @@ def cmd_workbook(args):
     snap = getattr(args, "snapshot", None)
     if snap:
         from common import load_snapshot, workbook_from_snapshot
-        if not os.path.isfile(snap):
-            sys.exit(f"✗ 快照文件不存在：{snap}\n"
-                     "请先按 SKILL.md「WPS 通道」把 kdocs 读表返回存成 raw.json，"
-                     "再跑 `python scripts/sheet_snapshot.py build --raw ... --out ...`。")
-        wb = workbook_from_snapshot(load_snapshot(snap))
+        wb = workbook_from_snapshot(load_json_file(snap, "快照（--snapshot）"))
         result = analyze_workbook(wb, args.sheet, snap)
     else:
-        openpyxl = require_openpyxl()
-        from openpyxl.utils.exceptions import InvalidFileException
-        # 旧版 .xls/.xlt 二进制格式 openpyxl 不支持（.xlsx/.xlsm/.xltx 可以）
-        if args.workbook.lower().endswith((".xls", ".xlt")):
-            sys.exit(f"✗ {args.workbook} 是旧版格式，openpyxl 不支持。"
-                     "请先用 Excel/WPS 把工作簿「另存为 .xlsx」再探测。")
-        try:
-            wb = openpyxl.load_workbook(args.workbook)
-        except InvalidFileException as e:
-            sys.exit(f"✗ 无法以 .xlsx 解析 {args.workbook}（{e}）。"
-                     "若是旧版 .xls，请先另存为 .xlsx 再探测。")
+        # 路径/旧版格式/openpyxl 缺失三类失败都由 open_local_workbook 统一给可执行提示
+        wb = open_local_workbook(args.workbook)
         result = analyze_workbook(wb, args.sheet, args.workbook)
 
     print(json.dumps(result, ensure_ascii=False, indent=2))
@@ -406,4 +397,5 @@ def main():
 
 
 if __name__ == "__main__":
+    ensure_utf8_stdio()
     main()

@@ -1,0 +1,15 @@
+# 统一换行：仓库内一律 LF。
+#
+# 实测（临时目录克隆两份、core.autocrlf=true 对照）：
+#   * 不加本文件：windows 检出后 20 个文件带 CRLF，而 `git status --porcelain` **仍为空**；
+#   * 加了本文件：检出后 0 个文件带 CRLF，`git status --porcelain` 同样为空。
+# git 对 autocrlf 的读写是**自洽**的（入库 CRLF→LF、检出 LF→CRLF、比对时再归一），
+# 所以 CRLF 不会让「工作区必须干净」那步检查假红 —— 别拿它当理由。
+#
+# 真正的理由只有一条：让不同平台的检出**逐字节一致**。否则同一个 commit 在 Windows
+# 与 Linux 上得到不同字节，git diff、外部校验和、跨平台横向比对都会被换行噪声干扰。
+* text=auto eol=lf
+*.py text eol=lf
+*.md text eol=lf
+*.json text eol=lf
+*.yml text eol=lf

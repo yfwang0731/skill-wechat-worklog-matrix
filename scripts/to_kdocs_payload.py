@@ -44,7 +44,7 @@ import argparse
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from common import load_config, col_index
+from common import load_config, col_index, ensure_utf8_stdio
 
 # 会被表格引擎"改写"的纯文本：以这些字符开头会被当公式/数值解析，
 # 其中 `'` 还会被引擎当"文本标记"吃掉；前导零数字串会被转数值丢零；≥16 位纯数字丢精度。
@@ -190,7 +190,9 @@ def main():
     ap.add_argument("--payload", required=True, help="payload.json / payload_n.json")
     ap.add_argument("--out", default=None, help="输出文件；缺省打印到 stdout")
     ap.add_argument("--file-id", default=None)
-    ap.add_argument("--worksheet-id", "--sheet-id", dest="worksheet_id", default=None,
+    # type=int：与 config.excel.kdocs.worksheet_id（JSON 里是整数）保持同一类型，
+    # 否则同一份请求体会因为"从哪来"而得到 7 或 "7" 两种形态。
+    ap.add_argument("--worksheet-id", "--sheet-id", dest="worksheet_id", type=int, default=None,
                     help="工作表 id（kdocs 连接器参数名 worksheet_id）")
     ap.add_argument("--date-cols", default=None,
                     help="日期列字母，逗号分隔（如 M,V,W）；缺省读 config.excel.date_columns")
@@ -216,6 +218,10 @@ def main():
     ws_id = args.worksheet_id
     if ws_id is None:
         ws_id = kdocs.get("worksheet_id", kdocs.get("sheet_id"))
+    # CLI 传进来的是字符串、config 里是整数 —— 统一成整数，否则两条路径产出的请求体不一致
+    # （连接器返回的 worksheet_id 就是整数）。非数字值原样透传，不做新校验。
+    if isinstance(ws_id, str) and ws_id.strip().lstrip("-").isdigit():
+        ws_id = int(ws_id.strip())
     date_numfmt = args.date_numfmt or kdocs.get("date_numfmt") or "yyyy/m/d"
 
     raw_date_cols = args.date_cols
@@ -295,4 +301,5 @@ def main():
 
 
 if __name__ == "__main__":
+    ensure_utf8_stdio()
     main()

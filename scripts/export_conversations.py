@@ -25,7 +25,7 @@ import sys
 import argparse
 from datetime import datetime, timezone, timedelta
 
-from common import md5hex, load_config
+from common import md5hex, load_config, ensure_utf8_stdio
 
 TZ = timezone(timedelta(hours=8))
 SHARDS = ["message_2.db", "message_1.db", "message_3.db"]   # m2 最老 → m3 最新
@@ -337,4 +337,5 @@ def main():
 
 
 if __name__ == "__main__":
+    ensure_utf8_stdio()
     main()

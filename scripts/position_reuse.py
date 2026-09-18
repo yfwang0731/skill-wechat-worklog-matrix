@@ -40,7 +40,8 @@ import argparse
 
 from common import (load_config, load_snapshot, workbook_from_snapshot, pick_sheet,
                     next_append_row_ws, position_columns, read_history_positions,
-                    reuse_position_fill, require_openpyxl)
+                    reuse_position_fill, open_local_workbook, require_file, load_json_file,
+                    ensure_utf8_stdio)
 
 PERSON_KEY = "提出人"
 POST_KEY = "提出人岗位"
@@ -49,16 +50,19 @@ POST_KEY = "提出人岗位"
 def load_history(args, sheet, header_row, start, col_person, col_post):
     """历史区 = [header_row+1, start-1]，**只读**。返回 (last_post, pairs)。"""
     if args.history:
-        with open(args.history, encoding="utf-8") as f:
-            d = {str(k).strip(): str(v).strip()
-                 for k, v in ((json.load(f) or {}).get("positions") or {}).items()}
+        d = {str(k).strip(): str(v).strip()
+             for k, v in ((load_json_file(args.history, "历史岗位 JSON（--history）") or {})
+                          .get("positions") or {}).items()}
         print(f"[history] 取自 {args.history}：{len(d)} 人")
         return d, None
     d, pairs = read_history_positions(sheet, header_row, start - 1, col_person, col_post)
     print(f"[history] 读表第 {header_row + 1}~{start - 1} 行：{len(d)} 人 / {pairs} 对")
     if not pairs:
-        print("  [warn] 历史区没有「提出人+岗位」成对数据：表格来源可能只含表头行"
-              "（云文档快照常见）。若确有历史岗位，请用 --history 传入。")
+        print("  [warn] 历史区没有「提出人+岗位」成对数据 —— 三种可能，请对照上面的行数判断：\n"
+              "    ① 表格来源只读了表头行 / 行没读全（云文档请按 SKILL.md「WPS 通道读表」"
+              "把关键列读到表末）；\n"
+              "    ② 读到了这两列，但历史区里确实从没填过岗位（这时复用本来就救不了）；\n"
+              "    ③ 只给了 --start-row。确需外部喂入时用 --history（**要你自己手写那个 JSON**）。")
     return d, pairs
 
 
@@ -68,14 +72,27 @@ def build_records(args, sheet, start, end, col_person, col_post):
     两种新行来源（CSV / 当前表格）都收敛到这里，后续只调用一次 reuse_position_fill。
     """
     if args.new_rows:
+        require_file(args.new_rows, "本批新行 CSV（--new-rows）")
         with open(args.new_rows, encoding="utf-8-sig") as f:
-            rows = list(csv.DictReader(f))
+            rdr = csv.DictReader(f)
+            have = set(rdr.fieldnames or [])
+            lack = [c for c in (PERSON_KEY, POST_KEY) if c not in have]
+            if lack:
+                # 缺列时旧实现会静默产出 0 条并 exit 0（"看起来跑了其实没做事"）。
+                # 典型来源：列映射里没有「提出人」列 → final_rows.csv 也就没有这一列。
+                sys.exit(f"✗ {args.new_rows} 缺少必需列 {lack}。\n"
+                         f"  现有列：{sorted(have)}\n"
+                         f"  请确认传入的是 final 产出的 final_rows.csv；"
+                         f"若台账模板本身没有「{PERSON_KEY}」列，岗位复用无从进行。")
+            rows = list(rdr)
         recs = [{"row": start + i,
                  PERSON_KEY: (r.get(PERSON_KEY) or "").strip(),
                  POST_KEY: (r.get(POST_KEY) or "").strip()}
                 for i, r in enumerate(rows)]
         print(f"[new-rows] 从 {os.path.basename(args.new_rows)} 读 {len(recs)} 行"
               f"（对应 Excel 第 {start}~{start + len(recs) - 1} 行）")
+        if recs and not any(r[PERSON_KEY] for r in recs):
+            print(f"  ⚠ 本批 {len(recs)} 行的「{PERSON_KEY}」全为空 → 岗位复用不会产生任何变更。")
         return recs
     recs = []
     for r in range(start, end + 1):
@@ -94,8 +111,8 @@ def main():
     src.add_argument("--workbook", help="本地 .xlsx 路径（本地通道）")
     src.add_argument("--snapshot", help="云文档快照 json（WPS 通道）")
     src.add_argument("--history",
-                     help='历史岗位 json（形如 {"positions":{"人名":"岗位"}}）：'
-                          "表格来源不含 N/O 列数据区时的通道")
+                     help='历史岗位 json（形如 {"positions":{"人名":"岗位"}}）。**要你自己手写** ——'
+                          "仓里没有任何脚本会生成这个文件；能用 --workbook/--snapshot 读到历史时不要用它")
     ap.add_argument("--new-rows", default=None,
                     help="本批新行 CSV（final 产出的 final_rows.csv）。给了就从 CSV 取新行，"
                          "不要求新行已落表；不给则从表格当前内容取。")
@@ -130,21 +147,12 @@ def main():
     # ---- 表格来源（可选：--history 通道不需要）----
     sheet = None
     if args.snapshot:
+        require_file(args.snapshot, "快照（--snapshot）")
         sheet = pick_sheet(workbook_from_snapshot(load_snapshot(args.snapshot)), sheet_hint)
         print(f"[source] WPS 快照 {args.snapshot}"
               f"（worksheet_id={getattr(sheet, 'sheet_id', None)}）")
     elif args.workbook:
-        openpyxl = require_openpyxl()
-        from openpyxl.utils.exceptions import InvalidFileException
-        # 旧版 .xls/.xlt 二进制格式 openpyxl 不支持（.xlsx/.xlsm/.xltx 可以）
-        if args.workbook.lower().endswith((".xls", ".xlt")):
-            sys.exit("✗ openpyxl 不支持旧版 .xls/.xlt 格式。请先用 Excel/WPS 把工作簿"
-                     "「另存为 .xlsx」再运行。")
-        try:
-            wb = openpyxl.load_workbook(args.workbook)
-        except InvalidFileException:
-            sys.exit(f"✗ 无法以 .xlsx 解析 {args.workbook}。若是旧版 .xls，请先另存为 .xlsx。")
-        sheet = pick_sheet(wb, sheet_hint)
+        sheet = pick_sheet(open_local_workbook(args.workbook), sheet_hint)
     end = args.end_row or (sheet.max_row if sheet is not None else 0)
 
     # ---- 锚点：必须明确"哪些行算本批新行" ----
@@ -160,9 +168,8 @@ def main():
         if sheet is None:
             sys.exit("✗ --new-rows 需要起点来推算 Excel 行号：请给 --workbook / --snapshot "
                      "让脚本自动推算，或显式 --start-row <本批首行号>。")
+        # 起点由 next_append_row_ws 算出（恒 ≥ 2），这里不需要再判"算不出来"
         start = next_append_row_ws(sheet, mapping, header_row)
-        if not start:
-            sys.exit("✗ 无法由表格推算起始行，请显式给 --start-row <本批首行号>。")
         print(f"[start-row] 自动取追加起始行 = {start}（--new-rows 的 Excel 行号 = 该行 + 序号）")
     else:
         sys.exit(
@@ -193,4 +200,5 @@ def main():
 
 
 if __name__ == "__main__":
+    ensure_utf8_stdio()
     main()

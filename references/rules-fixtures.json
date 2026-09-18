@@ -1,0 +1,297 @@
+{
+  "_comment": "判定规则的行为验证夹具。用途：改判定规则后，用 scripts/rules_check.py plan 生成盲评 case、派独立子代理判定、再用 verify 与这里的标注比对。",
+  "_why": "本 skill 的判定规则只能靠「行为验证」——静态断言只能守住枚举/开关三处一致这类**形状**，守不住规则本身对不对。此前这套流程（造夹具 → 盲评 → 比对）一直靠人临时做，于是规则的正确性没有任何可复跑的东西。夹具进仓库后，改规则就能对比「排除方向」与「保留方向」。",
+  "_format": {
+    "id": "唯一标识；会出现在 case 文件名 case_<id>.txt 里",
+    "rules": "本案例受哪些 rules.* 开关影响；空数组 = 与开关无关",
+    "anchor": "依据的规则在 SKILL.md 里的原文片段（必须**真实存在**，否则 CI 报悬空引用）",
+    "why": "一句话说明为什么这样期望，供人工复核",
+    "transcript": "自造转录片段（格式：日期 时间 | 发送者 | 内容）；发送者用占位 token，绝不含真实标识",
+    "expect.on / expect.off": "对应开关「开 / 关」两态下的期望；与开关无关的案例两态相同",
+    "expect.*.record": "true=应记录、false=应忽略",
+    "expect.*.outcome": "期望的 outcome 值；null 仅用于「根本不是需求」的案例（此时根本不输出）",
+    "expect.*.rows": "期望记录的行数（可选，缺省 1）",
+    "open": "true = 规则本身没定义清楚，verify 只报告不计失败；同时列入顶层 _open_questions",
+    "not_a_requirement": "true = 该消息压根不是「针对系统的需求」，不属于被忽略类 outcome"
+  },
+  "_tokens": {
+    "[我方]": "渲染成 people.handler",
+    "[对方]": "渲染成 counterparty_keyword + 甲",
+    "[对方2]": "渲染成 counterparty_keyword + 乙",
+    "[对方3]": "渲染成 counterparty_keyword + 丙"
+  },
+  "_open_questions": [
+    {
+      "case": "reply-with-ops-action",
+      "fork": "「指得出具体对象的 bug，我方回复了但只是运维动作」该记成什么 outcome —— 规则只定义了 vague 类忽略、以及「运维动作不算完成」，**没有定义**这类该落 done / pending / 还是别的。本夹具按 pending（未确认完成）记，verify 对此条只报告不计失败。",
+      "suggest": "若要收口：明确一句「我方只回运维动作、未答已解决 → 记 pending」。"
+    }
+  ],
+  "cases": [
+    {
+      "id": "reject-explicit",
+      "rules": ["ignore_if_rejected"],
+      "anchor": "我方明确拒绝",
+      "why": "对方提需求、我方明确拒绝：开关开时忽略；关时仍登记为待裁决行（outcome=rejected）。",
+      "transcript": [
+        "2026-06-01 09:00 | [对方] | 能不能加一个自动导出报表的功能",
+        "2026-06-01 09:12 | [我方] | 这个做不了，你们自己在系统里导出吧"
+      ],
+      "expect": {
+        "on": {"record": false, "outcome": "rejected"},
+        "off": {"record": true, "outcome": "rejected"}
+      }
+    },
+    {
+      "id": "no-reply",
+      "rules": ["ignore_if_no_reply"],
+      "anchor": "提出后无实质回复",
+      "why": "提出后我方一直没有实质回复：开关开时忽略；关时登记为待跟进行（outcome=no_reply）。",
+      "transcript": [
+        "2026-06-02 10:00 | [对方] | 麻烦把结算单位改成甲方",
+        "2026-06-02 10:05 | [对方] | 在吗",
+        "2026-06-03 14:00 | [我方] | 昨天的天气不错"
+      ],
+      "expect": {
+        "on": {"record": false, "outcome": "no_reply"},
+        "off": {"record": true, "outcome": "no_reply"}
+      }
+    },
+    {
+      "id": "vague-no-object",
+      "rules": ["ignore_vague_complaints"],
+      "anchor": "笼统抱怨不算需求",
+      "why": "「系统特别卡」指不出任何对象，我方只回了运维动作（重启）而非「已解决」⇒ 开关开时忽略；关时登记为 vague。这条是真机踩过的坑。",
+      "transcript": [
+        "2026-06-24 18:06 | [对方] | 系统特别卡",
+        "2026-06-24 18:08 | [我方] | 稍等 重启一下系统"
+      ],
+      "expect": {
+        "on": {"record": false, "outcome": "vague"},
+        "off": {"record": true, "outcome": "vague"}
+      }
+    },
+    {
+      "id": "vague-with-metric",
+      "rules": [],
+      "anchor": "给出了可定位对象或量化现象",
+      "why": "与 vague-no-object 成对：同样带体感词，但给出了**量化现象**（等 15 秒）⇒ 不算笼统抱怨，按 bug 正常记。只测一个方向会误杀这类。",
+      "transcript": [
+        "2026-06-25 09:20 | [对方] | 搜一个箱号要等 15 秒，太慢了",
+        "2026-06-25 09:40 | [我方] | 优化好了，现在 2 秒内出结果",
+        "2026-06-25 09:41 | [对方] | 好的"
+      ],
+      "expect": {
+        "on": {"record": true, "outcome": "done"},
+        "off": {"record": true, "outcome": "done"}
+      }
+    },
+    {
+      "id": "vague-but-resolved",
+      "rules": [],
+      "anchor": "且我方未明确答复已解决",
+      "why": "与 vague-no-object 成对的另一半：「又卡死了」本是笼统抱怨，但我方**明确答复已解决**（并给出根因）⇒ 必须记。条件句里「且我方未明确答复已解决」不成立，故开关关不关都不该忽略。",
+      "transcript": [
+        "2026-06-26 11:02 | [对方] | 系统又卡死了",
+        "2026-06-26 11:30 | [我方] | 是数据库连接池的问题，已经修了，你再试试",
+        "2026-06-26 11:35 | [对方] | 好了"
+      ],
+      "expect": {
+        "on": {"record": true, "outcome": "done"},
+        "off": {"record": true, "outcome": "done"}
+      }
+    },
+    {
+      "id": "reply-with-ops-action",
+      "rules": [],
+      "anchor": "运维性动作与安抚不算完成",
+      "why": "对方给的是**可定位对象**（审批后卡住）⇒ 不是笼统抱怨，应记；但我方只回了运维动作（重启）⇒ 不得记为 done。该落哪个 outcome 规则未定义，见顶层 _open_questions。",
+      "open": true,
+      "transcript": [
+        "2026-06-27 15:10 | [对方] | 审批后卡住了，单据过不去",
+        "2026-06-27 15:20 | [我方] | 稍等，重启一下系统"
+      ],
+      "expect": {
+        "on": {"record": true, "outcome": "pending"},
+        "off": {"record": true, "outcome": "pending"}
+      }
+    },
+    {
+      "id": "explicit-done",
+      "rules": [],
+      "anchor": "明确答复完成",
+      "why": "我方明确说完成 ⇒ done，且计划时间=完成时间=**我方说完成那条消息的日期**。与 reply-with-ops-action 成对（那一条同样有对象但只有运维动作）。",
+      "transcript": [
+        "2026-06-28 09:00 | [对方] | 锁帐时间改到 15 号了吗",
+        "2026-06-28 09:30 | [我方] | 改好了，你现在看下"
+      ],
+      "expect": {
+        "on": {"record": true, "outcome": "done"},
+        "off": {"record": true, "outcome": "done"}
+      }
+    },
+    {
+      "id": "data-change-default-done",
+      "rules": ["data_change_default_done"],
+      "anchor": "数据修改类特例",
+      "why": "数据修改类（改费用）：我方只回「我看看」——没答完成也没拒绝。开关开时默认完成（default_done，v/w 取**提出日期**）；关时不默认完成（pending）。这条的 on/off 差异在 outcome 而不在是否记录。",
+      "transcript": [
+        "2026-07-01 10:00 | [对方] | 把 ANTSQCY250789019 的费用改成 1200",
+        "2026-07-01 10:20 | [我方] | 我看看"
+      ],
+      "expect": {
+        "on": {"record": true, "outcome": "default_done"},
+        "off": {"record": true, "outcome": "pending"}
+      }
+    },
+    {
+      "id": "data-change-explicit-done",
+      "rules": [],
+      "anchor": "明确答复完成",
+      "why": "同样是数据修改类，但我方**明确答了完成** ⇒ 取 done，不能因为「数据修改类默认完成」就覆盖成 default_done（有明确结果时以明确结果为准）。",
+      "transcript": [
+        "2026-07-02 10:00 | [对方] | 补录一下 2026-08-01 的调拨数据",
+        "2026-07-02 11:00 | [我方] | 录好了"
+      ],
+      "expect": {
+        "on": {"record": true, "outcome": "done"},
+        "off": {"record": true, "outcome": "done"}
+      }
+    },
+    {
+      "id": "data-change-rejected",
+      "rules": ["ignore_if_rejected"],
+      "anchor": "我方明确拒绝",
+      "why": "数据修改类但**明确拒绝**（不合规）⇒ 拒绝优先于「默认完成」，开关开时忽略。与 data-change-default-done 成对。",
+      "transcript": [
+        "2026-07-03 10:00 | [对方] | 把这单的费用改成 1200",
+        "2026-07-03 10:15 | [我方] | 这个改不了，不合规"
+      ],
+      "expect": {
+        "on": {"record": false, "outcome": "rejected"},
+        "off": {"record": true, "outcome": "rejected"}
+      }
+    },
+    {
+      "id": "chitchat",
+      "rules": [],
+      "anchor": "寒暄/通知/闲聊不算",
+      "why": "寒暄与确认收到：压根不是「针对系统的需求」，应完全不输出（不是被忽略类 outcome）。",
+      "not_a_requirement": true,
+      "transcript": [
+        "2026-07-06 08:50 | [对方] | 早上好",
+        "2026-07-06 08:51 | [我方] | 早",
+        "2026-07-06 09:00 | [对方] | 收到"
+      ],
+      "expect": {
+        "on": {"record": false, "outcome": null},
+        "off": {"record": false, "outcome": null}
+      }
+    },
+    {
+      "id": "notice-broadcast",
+      "rules": [],
+      "anchor": "寒暄/通知/闲聊不算",
+      "why": "对方的通知/公告，不是他向我方提的需求 ⇒ 不输出。与 chitchat 同类但形态不同（容易被子代理误当成需求）。",
+      "not_a_requirement": true,
+      "transcript": [
+        "2026-07-07 16:00 | [对方] | 明天上午系统例行维护，预计 1 小时，请知晓",
+        "2026-07-07 16:05 | [我方] | 收到"
+      ],
+      "expect": {
+        "on": {"record": false, "outcome": null},
+        "off": {"record": false, "outcome": null}
+      }
+    },
+    {
+      "id": "plain-images",
+      "rules": [],
+      "anchor": "寒暄/通知/闲聊不算",
+      "why": "纯图片往来、没有可交付的文字需求 ⇒ 不输出。转录里图片已归一为 [图片]。",
+      "not_a_requirement": true,
+      "transcript": [
+        "2026-07-08 11:00 | [对方] | [图片]",
+        "2026-07-08 11:01 | [对方] | [图片]",
+        "2026-07-08 11:20 | [我方] | 收到"
+      ],
+      "expect": {
+        "on": {"record": false, "outcome": null},
+        "off": {"record": false, "outcome": null}
+      }
+    },
+    {
+      "id": "not-a-system-requirement",
+      "rules": [],
+      "anchor": "只记可交付的需求",
+      "why": "商务询价，落不成「改什么/修什么/加什么」，不是系统需求 ⇒ 不输出。",
+      "not_a_requirement": true,
+      "transcript": [
+        "2026-07-09 14:00 | [对方] | 这个功能能不能便宜点",
+        "2026-07-09 14:30 | [我方] | 这个得问商务那边"
+      ],
+      "expect": {
+        "on": {"record": false, "outcome": null},
+        "off": {"record": false, "outcome": null}
+      }
+    },
+    {
+      "id": "group-first-proposer",
+      "rules": [],
+      "anchor": "提出人取最早提出者",
+      "why": "群聊里同一需求多人先后提及/附和 ⇒ **只记最早提出人一条**（甲），不能记成三行。",
+      "transcript": [
+        "2026-07-10 09:00 | [对方] | 能不能加个批量导入",
+        "2026-07-10 09:01 | [对方2] | +1 我也需要",
+        "2026-07-10 09:02 | [对方3] | 同求",
+        "2026-07-10 10:00 | [我方] | 批量导入加好了，你试试",
+        "2026-07-10 10:01 | [对方] | 好的"
+      ],
+      "expect": {
+        "on": {"record": true, "outcome": "done", "rows": 1},
+        "off": {"record": true, "outcome": "done", "rows": 1}
+      }
+    },
+    {
+      "id": "multi-requirement-one-message",
+      "rules": [],
+      "anchor": "一条消息含多个需求",
+      "why": "一条消息里两个需求 ⇒ **拆成两行**，不能合并成一行。",
+      "transcript": [
+        "2026-07-13 09:00 | [对方] | 麻烦两个事：一是把 8 月的锁帐时间改到 15 号；二是导出增加箱号列",
+        "2026-07-13 09:30 | [我方] | 都好了"
+      ],
+      "expect": {
+        "on": {"record": true, "outcome": "done", "rows": 2},
+        "off": {"record": true, "outcome": "done", "rows": 2}
+      }
+    },
+    {
+      "id": "refermsg-requirement",
+      "rules": [],
+      "anchor": "正文常藏在 `<refermsg>` 里",
+      "why": "对方用「引用回复」提需求：真正的需求在引用原文里，只取标题会整条丢掉。转录里已按解码规则拼成「标题 / 引用: 正文」。",
+      "transcript": [
+        "2026-07-14 10:00 | [对方] | [链接/文件] 这个报表 / 引用: 麻烦把导出格式改成 xlsx",
+        "2026-07-14 11:00 | [我方] | 改好了"
+      ],
+      "expect": {
+        "on": {"record": true, "outcome": "done"},
+        "off": {"record": true, "outcome": "done"}
+      }
+    },
+    {
+      "id": "outcome-enum-coverage-pending",
+      "rules": ["data_change_default_done"],
+      "anchor": "数据修改类特例",
+      "why": "补齐 outcome 枚举里 pending 的**开态**出现路径（其余触点在 data-change-default-done 的关态）：数据修改类、我方只回安抚「再看看」⇒ 开时默认完成、关时未确认完成。",
+      "transcript": [
+        "2026-07-15 10:00 | [对方] | 把 6 月那批单号的箱号补一下",
+        "2026-07-15 10:30 | [我方] | 再看看"
+      ],
+      "expect": {
+        "on": {"record": true, "outcome": "default_done"},
+        "off": {"record": true, "outcome": "pending"}
+      }
+    }
+  ]
+}

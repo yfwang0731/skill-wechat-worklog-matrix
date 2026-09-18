@@ -1,0 +1,66 @@
+name: selftest
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  selftest:
+    name: py${{ matrix.python-version }} · ${{ matrix.deps }} · ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        # 3.9 是 SKILL.md 声明的最低支持版本，跨代测避免"本地新解释器能跑、用户装不上库"
+        python-version: ["3.9", "3.13"]
+        # minimal：一个第三方库都不装 —— 守「零依赖也能跑」+「缺库给可执行提示而非裸 traceback」
+        # full   ：装上 openpyxl / zstandard —— 守本地通道读表、ZSTD 成功解压这两条真实路径，
+        #          它们平时被 [SKIP] 掉，只有这一格会真的执行
+        deps: [minimal, full]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      # --only-binary：宁可不装也不要触发源码编译（runner 上没有 MSVC / 编译工具链）。
+      # zstandard 装不上不阻塞：它只影响一块覆盖面，自检会**显式**标 [SKIP] 而不是假绿。
+      - name: Install deps
+        if: matrix.deps == 'full'
+        shell: bash
+        run: |
+          python -m pip install --only-binary=:all: openpyxl
+          python -m pip install --only-binary=:all: zstandard \
+            || echo "::warning::zstandard 无预编译轮子，本次跳过（对应检查会标 [SKIP]）"
+
+      # 刻意**不在这里设** PYTHONUTF8 / PYTHONIOENCODING：
+      # windows runner 的标准流编码是 cp1252，而本 skill 的输出全是中文 ——
+      # 这个 job 同时在守「非 UTF-8 控制台下不崩」（由 common.ensure_utf8_stdio 修）。
+      # 设了就等于把这个问题盖住，windows 格子白跑。
+      - name: Smoke test
+        if: matrix.deps == 'minimal'
+        run: python scripts/smoke_test.py
+
+      - name: Smoke test (--full)
+        if: matrix.deps == 'full'
+        run: python scripts/smoke_test.py --full
+
+      # 自检不得污染仓库：跑完工作区必须还是干净的（临时产物只许落在系统临时目录）。
+      - name: Working tree must stay clean
+        shell: bash
+        run: |
+          dirty="$(git status --porcelain)"
+          if [ -n "$dirty" ]; then
+            echo "::error::自检污染了工作区："
+            echo "$dirty"
+            exit 1
+          fi

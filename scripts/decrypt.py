@@ -21,7 +21,7 @@ import sys
 import subprocess
 import argparse
 
-from common import find_db_storage, find_wcdb_tool
+from common import find_db_storage, find_wcdb_tool, ensure_utf8_stdio
 
 
 def main():
@@ -81,4 +81,5 @@ def main():
 
 
 if __name__ == "__main__":
+    ensure_utf8_stdio()
     main()
