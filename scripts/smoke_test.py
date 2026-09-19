@@ -819,11 +819,16 @@ def smoke_offline_e2e():
 # 「运行产物」的权威名单 —— **单一真相源**，两处共用：
 #   ① `smoke_repo_hygiene`：这些名字不得被 git 跟踪，且 `.gitignore` 必须逐条收录；
 #   ② `smoke_doc_structure`：它们**不得命中任何随 skill 分发的文件**。
-# ⚠️ 加通配符时必须收紧到"只会命中真产物"。真事故：`agent*.json` 同时命中了
-#    `references/agent-contract.json`（子代理产出契约的**唯一真相源**）——
-#    `.gitignore` 与这里各写了一份同样的过宽 glob，于是那个文件**从没被 git 跟踪**：
-#    本地有它、自检全绿；CI 与任何新克隆都没有它，2026-09-19 发 v1.2.0 时 **CI 4/4 全红**。
-#    **要写 `agent_*.json`。**（也别写 `agent[-_0-9]*.json` —— 字符组里的 `-` 照样匹配连字符。）
+# ⚠️ 加通配符时**两头都得钉**：过宽会吞掉"本来就要随 skill 分发"的文件（CI 会响），
+#    过窄会放走"含聊天原文的产物"（**静默** —— 漏掉的代价是隐私，比 CI 报错严重）。
+#    两种错法在 2026-09-19 发 v1.2.0 那天**都真发生过**：
+#      · **过宽**：`agent*.json`（`.gitignore` 与这份名单**各写了一份**）同时命中
+#        `references/agent-contract.json`（子代理产出契约的**唯一真相源**）→ 它**从没被 git 跟踪**：
+#        本地有它、自检全绿；CI 与任何新克隆都没有它 ⇒ **CI 4/4 全红、17 项失败**。
+#        （也别写 `agent[-_0-9]*.json` —— 字符组里的 `-` 照样匹配连字符。）
+#      · **过窄**：紧接着改成的 `agent_*.json` 漏掉**真机形态** `agent<字母>_<账号名>.json`
+#        ⇒ 兜底**静默失效**；而当时的断言只钉了 `agent_1.json` 一种（合成夹具）形态，所以照样全绿。
+#    **现值 `agent[!-]*.json`** 两头都对（四种形态的断言见 `smoke_doc_structure`）。
 REPO_NEVER_ARTIFACTS = [
     ("config.json", "本地个人配置（含账号目录/路径）"),
     ("wechat_pilot/", "解密/导出产物（账号目录与聊天明文）"),
@@ -841,7 +846,7 @@ REPO_NEVER_ARTIFACTS = [
     ("prompt_rendered.txt", "渲染后的完整提示词（含我方标识=微信号）"),
     ("rules_cases/", "盲评用例（含渲染后的对方关键字）"),
     ("validation_report.txt", "产出契约校验报告（含 agent 文件名与违约值）"),
-    ("agent_*.json", "子代理产出（含聊天原文 evidence 与真人姓名）"),
+    ("agent[!-]*.json", "子代理产出（含聊天原文 evidence 与真人姓名）"),
     ("probe.json", "probe --dump 的产物（含会话真名/wxid、账号目录与表头处理人）"),
     ("history_positions.json", "--history 的输入（人名→岗位）"),
 ]
@@ -2439,10 +2444,19 @@ def smoke_doc_structure():
         f"这些文件随 skill 分发，却被 .gitignore 覆盖 ⇒ **不会进仓库**（CI / 新克隆里缺失）："
         f"{_swallowed}\n"
         "  真事故：`agent*.json` 吞掉了 `references/agent-contract.json`。**收紧 glob，别放宽它。**")
-    # 两头都要钉：真·子代理产出必须仍被忽略，契约文件必须**不**被忽略
-    assert _allowed_by_gitignore("agent_1.json"), "派生失效：子代理产出应当被忽略"
-    assert not _allowed_by_gitignore("agent-contract.json"), \
-        "派生误报：契约文件被当成可忽略产物（这正是上面那次事故的成因）"
+    # 两头都要钉 —— **而且每一头都要多钉几种形态**。
+    # 真事故（同一天的第二半）：第一次这里只钉了 `agent_1.json`（合成夹具形态），
+    # 于是把 glob 收窄成 `agent_*.json` 之后，**真机形态 `agent<字母>_<账号名>.json`
+    # 不再被忽略，而断言照样全绿** —— "含聊天原文的产物别入库"的兜底**静默失效**。
+    # 单形态断言 = 单点失效：钉住的永远只是自己恰好想到的那一种写法。
+    _must_ignore = ("agentA_account.json", "agentZ_somebody.json",   # 真机形态：agent<字母>_<账号>
+                    "agent_1.json", "agent1.json")                    # 按批形态：夹具 / 文档里的写法
+    _must_keep = ("agent-contract.json", "agent-prompt-zh.txt")
+    for _n in _must_ignore:
+        assert _allowed_by_gitignore(_n), f"派生失效：子代理产出 {_n!r} 应当被忽略"
+    for _n in _must_keep:
+        assert not _allowed_by_gitignore(_n), \
+            f"派生误报：{_n!r} 被当成可忽略产物（这正是上面那次 CI 全红的成因）"
     # 「什么算运行产物」还有**第二处**名单（模块级的 `REPO_NEVER_ARTIFACTS`）——
     # 两处都得钉。真事故：`.gitignore` 与那份名单**各写了一份** `agent*.json`，
     # 结果两处都吞掉了 `references/agent-contract.json`。

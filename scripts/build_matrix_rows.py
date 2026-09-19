@@ -545,7 +545,8 @@ def cmd_final(args):
         # 0 数据行时旧实现会安静地写出空 final_rows.csv + 空 payload 并 exit 0 ——
         # 属"看起来跑了其实没做事"，与「绝不静默」冲突：明确说出来，让人去查上游。
         raise SystemExit(f"✗ {args.preview} 只有表头、没有任何数据行 —— 没有可生成的行。\n"
-                         "  请确认 preview 的输入（_out 下的 agent_*.json）确实产出了行。")
+                         "  请确认 preview 的输入（_out 下 agent 开头的 json，"
+                         "真机形态形如 agent<字母>_<账号>.json）确实产出了行。")
     seqs = {r["序号"] for r in rows}
 
     # ---- remove 校验 ----
