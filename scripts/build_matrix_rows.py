@@ -28,12 +28,15 @@ config.rules.reuse_position_column=false。
 """
 import json, os, re, csv, argparse, difflib
 
-from common import (load_config, col_index, serial, pick_sheet, next_append_row_ws,
+from common import (load_config, col_index, serial, parse_date, pick_sheet,
+                    counterparty_keyword, next_append_row_ws,
                     load_snapshot, workbook_from_snapshot, snapshot_sheet_coverage,
                     position_columns, warn_if_inside_git_repo,
                     read_history_positions, reuse_position_fill, open_local_workbook,
                     require_dir, require_file, is_placeholder, load_json_file,
-                    ensure_utf8_stdio)
+                    ensure_utf8_stdio,
+                    assert_target_row_empty, assert_no_overlap,
+                    read_watermark, write_watermark, WATERMARK_NAME)
 
 # 岗位词表：用于从"提出人"文本里剥离岗位（可通过 config.post_words 覆盖/扩展）
 DEFAULT_POST_WORDS = ["商务经理", "商务", "客服", "接单客服", "财务", "调度", "前程操作",
@@ -56,8 +59,16 @@ def norm_o(o, cfg):
     前缀剥离仅在 keyword 后紧跟分隔符（空格/·/、/，等）时执行，
     避免把姓名本身含 keyword 的情况（如 keyword="李四" 而 O="李四财务"）剥空。
     """
-    o = re.sub(r"[（(].*?[)）]", "", (o or "").strip()).strip()
-    kw = (cfg.get("people", {}) or {}).get("counterparty_keyword") or ""
+    o = (o or "").strip()
+    # 括号内容**先判是不是岗位词**：`张三（财务）` 的岗位就在括号里，无条件删括号会把它
+    # 丢掉（N 列变空，而原文里明明写着）。提示词说的是"去掉前缀 / 括号后缀"，本就隐含
+    # "括号里的岗位归到 N"。括号里不是岗位词时照旧删除（那是别名/备注之类）。
+    br_post = ""
+    _m = re.match(r"^(.*?)[（(]([^（()）]*)[)）]\s*$", o)
+    if _m and _m.group(2).strip() in post_words(cfg):
+        br_post, o = _m.group(2).strip(), _m.group(1).strip()
+    o = re.sub(r"[（(].*?[)）]", "", o).strip()
+    kw = counterparty_keyword(cfg)     # people.counterparty_keyword，缺省回落 scope.name_filter
     if kw:
         # 仅在 kw 作为整词前缀（后随分隔符或行尾）时剥离
         o = re.sub(r"^%s(?:[\s·、,，;；:：]+|$)" % re.escape(kw), "", o).strip()
@@ -69,7 +80,8 @@ def norm_o(o, cfg):
             if rest:
                 post, o = w, rest
             break
-    return o or "(未知)", post
+    # 尾部岗位优先（更贴近"姓氏+岗位"的书写习惯），括号里的次之
+    return o or "(未知)", post or br_post
 
 
 def load_agents(d, cfg):
@@ -94,7 +106,15 @@ def load_agents(d, cfg):
             r["N"] = p or ""
     # 排序键要先兜 None：子代理 JSON 里出现 "ask_date": null 时，
     # r.get("ask_date", "") 返回 None，会与 str 比较直接 TypeError 崩掉
-    rows.sort(key=lambda r: (str(r.get("ask_date") or ""), str(r.get("chat") or "")))
+    # 排序键用 parse_date 而不是 ask_date 字符串：`2026/9/5` 与 `2026-09-05` 直接比字符串
+    # 会把 10 月排到 9 月前面；而 `final` 用的是 serial() 后的**数值** —— 两处口径必须一致，
+    # 否则 preview 的「序号」顺序与最终落表顺序不同，人工按序号做 --remove/--merge 会错位。
+    # 解析不出的日期排最后（(1, 0, chat)），与 final 把无日期行沉底的行为对齐。
+    def _date_key(r):
+        d = parse_date(r.get("ask_date"))
+        return (1, 0, str(r.get("chat") or "")) if d is None else (
+            0, d.toordinal(), str(r.get("chat") or ""))
+    rows.sort(key=_date_key)
     for i, r in enumerate(rows):
         r["_i"] = i + 1
     return rows
@@ -111,7 +131,10 @@ def ids(s):
       避免证据里出现的日期把无关需求误判为「同一单号」。
     """
     out = set(re.findall(r"[A-Za-z]{2,}\d{6,}", s or ""))
-    for m in re.findall(r"\d{6,}", s or ""):
+    # 纯数字要求 **≥8 位**：≥6 位会把电话段、金额、短箱号一网打尽，而通道1 原本
+    # "共享单号即标重复、不看时间" —— 两条无关需求只要碰巧含同一串数字就会被并成一条。
+    # 带字母前缀的单号（ANTSQCY250789019）不受影响：≥2 字母 + ≥6 位的特征足够强。
+    for m in re.findall(r"\d{8,}", s or ""):
         if len(m) == 8:
             try:
                 y, mo, dd = int(m[:4]), int(m[4:6]), int(m[6:8])
@@ -136,14 +159,9 @@ def flag_dups(rows, cfg):
     near_days = rules.get("near_days", 10)
     if not rules.get("merge_cross_session", True):
         return
-
-    from datetime import datetime as dt
-
-    def _d(s):
-        try:
-            return dt.strptime(str(s or "")[:10], "%Y-%m-%d")
-        except Exception:
-            return None
+    # 同会话重复的相似度阈值：**必须高于跨会话的**（见通道2 的注释）。用户把
+    # similarity_threshold 调得比 0.9 还高时以用户为准，所以取 max。
+    same_chat_thr = max(thr, 0.9)
 
     # 预计算每行的 单号集 / clean 描述 / 时间 / 解析后的日期对象
     prep = []
@@ -153,7 +171,10 @@ def flag_dups(rows, cfg):
             "clean": clean(r.get("L", "")),
             "chat": r.get("chat", ""),
             "date": (r.get("ask_date") or ""),
-            "d": _d(r.get("ask_date")),
+            # 走 common.parse_date（全项目唯一入口）：原先这里是严格 strptime，
+            # 只认 YYYY-MM-DD，而 serial() 用宽松正则 —— 同一份 2026/9/5 一处认
+            # 一处不认，时间窗就此静默失效（失败方式是"少判几条重复"，不报错）。
+            "d": parse_date(r.get("ask_date")),
         })
 
     # 单号 -> 行下标（仅对"同单号出现 ≥2 次"的行留用）
@@ -181,6 +202,13 @@ def flag_dups(rows, cfg):
                 key = (min(i, j), max(i, j))
                 if key in done:
                     continue
+                # **同时要求在时间窗内**：单号识别（`ids()`）是启发式的，电话段 / 金额 /
+                # 箱号都可能被当成"单号"。不加这道窗，两条毫不相干的需求只要碰巧含同一串
+                # 数字就会被并掉 —— 而"并掉"意味着一条真需求消失。跨期重提同单号因此
+                # 不再标记（宁可漏标，也不误并）。
+                da, db = prep[i]["d"], prep[j]["d"]
+                if da is not None and db is not None and abs((da - db).days) > near_days:
+                    continue
                 done.add(key)
                 flag(i, j)
 
@@ -192,8 +220,11 @@ def flag_dups(rows, cfg):
         for j in range(i + 1, len(rows)):
             if (i, j) in done:
                 continue
-            if pa["chat"] == prep[j]["chat"]:
-                continue
+            # 同一会话里的重复（子代理拆行失误、同一个人重提）**也要看** —— 只是用
+            # **更高**的阈值：同一会话的前后文天然相似（同一业务、同一单号），沿用跨会话
+            # 阈值会误标一堆本来不相干的行；而拆行失误产生的两行几乎逐字相同，高阈值
+            # 照样抓得住。此前这里直接 `continue` 跳过同会话 → 那类重复完全无人管。
+            same_chat = pa["chat"] == prep[j]["chat"]
             lb = prep[j]["clean"]
             if not lb:
                 continue
@@ -206,7 +237,7 @@ def flag_dups(rows, cfg):
             if abs((da - db).days) > near_days:
                 continue
             sim = difflib.SequenceMatcher(None, la, lb).ratio()
-            if sim >= thr:
+            if sim >= (same_chat_thr if same_chat else thr):
                 done.add((i, j))
                 flag(i, j)
 
@@ -217,26 +248,105 @@ PREVIEW_COLS = ["序号", "会话", "提出人", "提出人岗位", "提出时�
 PREVIEW_REQUIRED = ["序号", "提出人", "提出人岗位", "提出时间", "需求描述",
                     "需求归类", "影响级别", "优先级", "计划时间", "完成时间"]
 
+# ---- 判定子代理的产出契约：**唯一真相源是 references/agent-contract.json** ----
+# 为什么要有这个文件：这套字段与枚举**提示词里也有一份**（references/agent-prompt-zh.txt
+# 的【输出】一节）。两份此前只靠代码注释里一句"一一对应"维系 —— 改一边忘另一边，
+# 子代理的**合法**产出就会被判"不合契约"而整批卡住，或者越界值一路顺进台账。
+# 现在：代码以 json 为准，自检再比对提示词，单边改动必然红。
+AGENT_CONTRACT_PATH = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "references", "agent-contract.json")
+
+
+class ContractError(Exception):
+    """产出契约缺失 / 损坏。
+
+    刻意**不抛 SystemExit**：那继承自 BaseException，被 `import` 时会把整个进程杀掉 ——
+    自检的第一项（import 冒烟）当场死，后面几十项一条都不跑，人只看到"没输出 + 非零退出"。
+    普通异常则能被自检的 `check()` 捕获成 `[FAIL]`，其余检查继续跑；
+    而直接当脚本跑时，下面那段会把它转成 SystemExit，仍然只给干净的一句错、不出 traceback。
+    """
+
+
+def load_agent_contract(path=None):
+    """读产出契约；缺失 / 损坏时抛 `ContractError`（见上面的取舍说明）。"""
+    p = path or AGENT_CONTRACT_PATH
+    try:
+        with open(p, encoding="utf-8") as f:
+            d = json.load(f)
+    except FileNotFoundError:
+        raise ContractError(f"找不到产出契约 {p} —— 它随 skill 分发，不该缺失。")
+    except Exception as e:
+        raise ContractError(f"产出契约 {p} 读不出（{type(e).__name__}）：{e}")
+    need = ("fields", "required", "q_values", "r_values", "s_values",
+            "date_fields", "outcome_label")
+    lack = [k for k in need if k not in d]
+    if lack:
+        raise ContractError(f"产出契约 {p} 缺字段 {lack}")
+    return d
+
+
+try:
+    CONTRACT = load_agent_contract()
+except ContractError as _e:
+    if __name__ == "__main__":
+        raise SystemExit(f"✗ {_e}")     # 当脚本跑：干净的一句话 + 非零退出
+    raise                                # 被 import（自检）：普通异常 → [FAIL] + 继续跑完
+
 # 「需求归类」的取值域 —— 2026-09-18 从线上台账「需求归类」列**实测 196 格**得到：
 # 数据处理 104 / bug 31 / 答疑 27 / 优化 24 / 需求 9。**优化与需求是并存的两种值**。
 # 加新取值前先核对真实模板（这列没有下拉校验，是自由文本，所以更需要白名单兜住）。
-Q_VALUES = ("数据处理", "优化", "需求", "bug", "答疑")
+# 取值域本身登记在 agent-contract.json，这里只是读出来。
+Q_VALUES = tuple(CONTRACT["q_values"])
 # 子代理偶尔把「优化或需求」连写成一个值（提示词规则文本曾写成"需求或优化"所致），
 # 而台账里**没有**这个值 → 归一到「需求」。真机实测出现过 3 条，故保留该映射。
-QMAP = {"优化或需求": "需求"}
-OUTCOME_LABEL = {"done": "答复完成", "default_done": "默认完成(数据修改)",
-                 "rejected": "已拒绝(记录)", "no_reply": "无回复(记录)",
-                 "vague": "笼统抱怨(记录)", "pending": "未确认完成"}
+# 2026-09-18 扩容：只收**无歧义**的连写 / 近义写法。有歧义的（"优化需求"同时含两个值）
+# 刻意不收 —— 硬归一就是替用户做业务判断，交给下面 normalize_q 的"多义不猜"分支。
+QMAP = {"优化或需求": "需求", "功能新增": "需求", "新增功能": "需求",
+        "功能改进": "优化", "老功能改进": "优化",
+        "故障": "bug", "缺陷": "bug",
+        "数据修正": "数据处理", "改数据": "数据处理",
+        "咨询": "答疑", "问询": "答疑"}
 
-# ---- 判定子代理的产出契约（与 references/agent-prompt-zh.txt 的【输出】一节一一对应）----
-# 为什么要在 preview 里硬拦：子代理的错值不会当场报错，而是**一路顺到 final 写进台账**。
-# 旧实现只做宽松兜底（r.get(...)），字段拼错 / 枚举越界 / 日期写成 2026/9/5 都静默通过。
-AGENT_FIELDS = ("chat", "O", "N", "ask_date", "L", "Q", "R", "S",
-                "outcome", "v_date", "w_date", "evidence", "note")
-AGENT_REQUIRED = ("O", "L", "ask_date")      # 缺任一 → 对应单元格为空
-AGENT_R_VALUES = ("高", "中", "低")
-AGENT_S_VALUES = ("1", "2", "3", "4", "5")
-AGENT_DATE_FIELDS = ("ask_date", "v_date", "w_date")
+
+def normalize_q(v, q_values=Q_VALUES):
+    """把「需求归类」归一到取值域；落不进去就**原样返回**，由调用方报错。
+
+    三道，从确定到宽松：
+      ① 已在取值域 → 原样；
+      ② 命中 QMAP 的连写 / 近义写法 → 取映射值；
+      ③ **唯一的**包含匹配（白名单词 ⊂ 值，或值 ⊂ 白名单词）→ 取它。
+         0 个候选 = 陌生写法，≥2 个候选 = 有歧义（"优化需求"同时含"优化"与"需求"）
+         —— **两种都不猜**。
+
+    为什么宁可不猜：归错了不会报错，只会让台账的取值统计悄悄变形。让人看一眼的成本，
+    远低于事后从一堆混值里回捞。
+    """
+    v = (v or "").strip()
+    if not v or v in q_values:
+        return v
+    if v in QMAP:
+        return QMAP[v]
+    # `v in q` 这个方向**只在 v 至少两个字时才启用**：否则单字会被包含匹配吞掉 ——
+    # "需" 命中「需求」、「化」命中「优化」，而单字根本不是用户想表达的值。
+    # （另一个方向 `q in v` 不受此限："系统bug" 本来就该归到 bug。）
+    hits = [q for q in q_values if q in v or (len(v) >= 2 and v in q)]
+    return hits[0] if len(hits) == 1 else v
+OUTCOME_LABEL = dict(CONTRACT["outcome_label"])
+
+# 「确有结论」的 outcome 对应的**中文标签**集合 —— preview CSV 的「结果」列写的是标签，
+# 所以任何按「结果」比对的地方都必须用它，不能拿 outcome 英文码去比（那样恒不相等）。
+# 单一真相源仍是 agent-contract.json：这里只做一次标签映射，不另抄一份枚举。
+_DONE_LABELS = frozenset(OUTCOME_LABEL[k] for k in ("done", "default_done"))
+
+# 契约其余各项同样取自 agent-contract.json —— **别再在别处抄一份**。
+# 硬拦的理由：子代理的错值不会当场报错，而是**一路顺到 final 写进台账**；旧实现只做
+# 宽松兜底（r.get(...)），字段拼错 / 枚举越界 / 日期写成 2026/9/5 都静默通过。
+AGENT_FIELDS = tuple(CONTRACT["fields"])
+AGENT_REQUIRED = tuple(CONTRACT["required"])     # 缺任一 → 对应单元格为空
+AGENT_R_VALUES = tuple(CONTRACT["r_values"])
+AGENT_S_VALUES = tuple(CONTRACT["s_values"])
+AGENT_DATE_FIELDS = tuple(CONTRACT["date_fields"])
 # 冒烟/示例产物里常见这些"不是子代理产出"的 json，不能按契约拦（payload 是 dict 而非数组）
 AGENT_NAME_RE = re.compile(r"^agent.*\.json$", re.I)
 
@@ -304,10 +414,12 @@ def validate_agents(src, report_path=None):
                 if not str(r.get(f) or "").strip():
                     problems.append({"kind": f"缺必填 {f}", "where": f"{where}:{f}",
                                      "msg": "空或缺失 → 该列会写成空格"})
-            q = str(r.get("Q") or "").strip()
-            if q and q not in Q_VALUES and q not in QMAP:
+            q_raw = str(r.get("Q") or "").strip()
+            q = normalize_q(q_raw)
+            if q and q not in Q_VALUES:
                 problems.append({"kind": "Q 取值越界", "where": f"{where}:Q",
-                                 "msg": f"{q!r} 不在取值域 {list(Q_VALUES)}（连写值会被归一，其余需核模板）"})
+                                 "msg": f"{q_raw!r} 归不到取值域 {list(Q_VALUES)} 内的任何值"
+                                        "（连写 / 近义写法会自动归一；陌生写法与有歧义的写法需人工裁决）"})
             oc = str(r.get("outcome") or "").strip()
             if oc not in OUTCOME_LABEL:
                 problems.append({"kind": "outcome 取值越界", "where": f"{where}:outcome",
@@ -398,7 +510,7 @@ def cmd_preview(args):
         for r in rows:
             ev = (r.get("evidence") or "").replace("\n", " / ")
             w.writerow([r["_i"], r.get("chat", ""), r["O"], r.get("N", ""), r.get("ask_date", ""),
-                        r.get("L", ""), QMAP.get(r.get("Q", ""), r.get("Q", "")),
+                        r.get("L", ""), normalize_q(r.get("Q", "")),
                         r.get("R", ""), r.get("S", ""),
                         OUTCOME_LABEL.get(r.get("outcome"), r.get("outcome") or ""),
                         r.get("v_date", ""), r.get("w_date", ""), r.get("_flag", "").strip(),
@@ -437,23 +549,32 @@ def cmd_final(args):
     seqs = {r["序号"] for r in rows}
 
     # ---- remove 校验 ----
+    # 序号打错**必须报错**，不能只告警：`--remove` 就是用来删掉"不该进台账"的行的，
+    # 静默忽略 = 那些行照旧落表，而调用方以为已经删干净了。
+    # 提醒一句：这里的「序号」是 preview CSV 的「序号」列，**不是 Excel 行号** ——
+    # 两套编号混用是这套流程里最容易犯的错之一。
     remove = {x.strip() for x in (args.remove or "").split(",") if x.strip()}
     bad_rm = remove - seqs
     if bad_rm:
-        print(f"⚠ 警告：--remove 中不存在的序号 {sorted(bad_rm)} 已忽略（有效范围 1..{len(rows)}）")
+        raise SystemExit(
+            f"✗ --remove 里的序号不存在：{sorted(bad_rm)}\n"
+            f"  有效范围 1..{len(rows)}，指的是 preview CSV 的「序号」列（**不是 Excel 行号**）。"
+            "请核对后重跑。")
 
     # ---- merge 校验 + b 字段融合进 a ----
     merge_map = {}
     if args.merge:
         for pair in args.merge.split(","):
             if ":" not in pair:
-                print(f"⚠ 警告：跳过格式非法的合并对 {pair!r}（应为 a:b）")
-                continue
-            a, b = pair.split(":")
-            a, b = a.strip(), b.strip()
-            if a not in seqs or b not in seqs or a == b:
-                print(f"⚠ 警告：跳过无效合并对 {a}:{b}（须存在且不相等）")
-                continue
+                raise SystemExit(
+                    f"✗ --merge 的合并对格式非法：{pair!r}（应为 a:b —— b 并入 a）")
+            a, b = (x.strip() for x in pair.split(":", 1))
+            if a not in seqs or b not in seqs:
+                raise SystemExit(
+                    f"✗ --merge 的合并对 {a}:{b} 里有不存在的序号"
+                    f"（有效范围 1..{len(rows)}，preview CSV 的「序号」列）。")
+            if a == b:
+                raise SystemExit(f"✗ --merge 的合并对 {a}:{b} 两端相同 —— 自己并进自己。")
             merge_map[b] = a
     # 保留行（先按序号收集，再处理合并融合）
     keep_map = {}
@@ -470,7 +591,15 @@ def cmd_final(args):
             src = next((x for x in rows if x["序号"] == b), None)
             if src is None:
                 continue
-            # 融合：目标行空字段用 b 的非空值补齐（不覆盖已有值）
+            # **保留较早的那一行**：SKILL.md 承诺"合并一行，提出人取最早提出者"，而此前只做
+            # "用 b 补 a 的空字段" —— 若 a 比 b 晚，提出时间与提出人就都不是最早的，台账记下的
+            # 不是"谁最早提的"。这里比一次日期，晚的一方退为补充来源。（用 parse_date 比，
+            # 不用字符串比：`2026/9/5` 与 `2026-09-05` 直接比字符串会判反。）
+            tb, ts = parse_date(base.get("提出时间")), parse_date(src.get("提出时间"))
+            if tb and ts and ts < tb:
+                base, src = src, base
+                keep_map[a] = base
+            # 融合：目标行空字段用另一方的非空值补齐（不覆盖已有值）
             for k, v in src.items():
                 if k == "序号":
                     continue
@@ -485,10 +614,19 @@ def cmd_final(args):
     final = []
     bad_q = {}
     for r in keep:
-        q = QMAP.get(r["需求归类"], r["需求归类"] or "")
+        q = normalize_q(r["需求归类"])
         if q and q not in Q_VALUES and q not in bad_q:
             bad_q[q] = r["序号"]
         row = dict(defaults)          # 先铺默认值（项目编号/项目名称/固定列）
+        # 状态列：只给**确有结论**的行保留 defaults 里的"完成"；关态记下的
+        # rejected/no_reply/vague/pending 是"待人工裁决"，若也写"完成"，台账会替人得出
+        # "已经做完"的结论 —— 而备注列又被强制清空，裁决痕迹就此彻底消失。留空更诚实。
+        # ⚠️ 判据必须比对**中文标签**：这里的行来自 preview CSV，那一列写的是
+        #    OUTCOME_LABEL[outcome]（"答复完成" / "默认完成(数据修改)"），**不是** outcome 英文码。
+        #    本判据曾误写为 `not in ("done", "default_done")` —— 与中文标签恒不相等，
+        #    于是**每一行**都被清空、`defaults.状态` 彻底失效（真机 14 行全中，自检当时无断言）。
+        if "状态" in mapping and str((r.get("结果") or "")).strip() not in _DONE_LABELS:
+            row["状态"] = ""
         row["需求描述"] = (r["需求描述"] or "").strip()
         row["提出时间"] = serial(r["提出时间"])
         row["提出人岗位"] = r["提出人岗位"] or ""
@@ -506,8 +644,9 @@ def cmd_final(args):
         final.append(row)
 
     if bad_q:
-        print("⚠ 以下「需求归类」不在台账现有取值域 " + str(list(Q_VALUES)) +
-              " 内，会**原样写入**，请核对是否该归一：")
+        print("⚠ 以下「需求归类」**归一后仍**不在取值域 " + str(list(Q_VALUES)) +
+              " 内，会原样写入。连写 / 近义写法已自动归一，剩下的属于陌生写法或有歧义的写法"
+              "（如「优化需求」同时含两个值）—— 请人工裁决后改 preview CSV 再重跑：")
         for v, seq in sorted(bad_q.items()):
             print(f"    #{seq}  {v!r}")
 
@@ -571,16 +710,32 @@ def cmd_final(args):
                   "若台账已有数据，请改用 --start-row-excel <行号>，或按 SKILL.md"
                   "「WPS 通道读表」补读数据区后重建快照。")
 
+    # ---- 落表前的两道复核：目标行必须为空，且不与上一批已生成的区间重叠 ----
+    # 上面那些 ⚠ 都只是提示 —— 起始行算错时它们**不会拦住写入**，而回填是覆盖式的：
+    # 一旦写下去，历史数据就被盖掉且没有任何检查会发现。所以这里必须硬拦。
+    if sheet is None:
+        # 没有表格来源（只给了 --start-row-excel 或 config.excel.start_row）就**没得复核**：
+        # 一行都读不到，无法证明"第 start 行是空的"。这种情况必须说出来 —— 它恰恰是
+        # 手误行号最容易出事的入口。水位那条仍然生效（它不需要读表）。
+        print(f"⚠ 未提供表格来源（--workbook / --snapshot），**无法复核第 {start} 行是否为空**：\n"
+              "  手误的行号会直接覆盖历史数据。要复核就补上表格来源；"
+              "确认行号无误可继续（水位检查不受影响）。")
+    assert_target_row_empty(sheet, start, force=args.force)
+    assert_no_overlap(start, read_watermark(outdir), force=args.force)
+
     # ---- 岗位列复用：在本批落表之前算好，随**同一份** payload 一次写入 ----
     # 历史区 = [header_row+1, start-1]，**只读**；填充只发生在**本批行**上。
     do_reuse = getattr(args, "reuse_position", None)
     if do_reuse is None:
         do_reuse = (cfg.get("rules", {}) or {}).get("reuse_position_column", True) is not False
+    col_person, col_post = position_columns(mapping)
+    if do_reuse and col_person is None:
+        # mapping 由 probe 依**表头名**生成：缺这两个键 = 台账本来就没有这两列
+        # （「提出人岗位」也不在 probe 的必需列清单里）。没有列可写，跳过是对的，
+        # 也没必要打扰用户 —— 旧实现退回写死的 O/N 列位，会把岗位写进完全无关的列。
+        print("[reuse] column_mapping 无「提出人/提出人岗位」→ 跳过岗位复用（台账无此列）。")
+        do_reuse = False
     if do_reuse:
-        col_person, col_post = position_columns(mapping)
-        if not (mapping.get("提出人") and mapping.get("提出人岗位")):
-            print(f"⚠ column_mapping 缺「提出人/提出人岗位」，复用退回默认列位"
-                  f"（提出人=第{col_person}列, 岗位=第{col_post}列）。")
         # ---- 快照覆盖范围的两条检查（只在要复用时才做：不复用时数据区根本不参与计算）----
         # 判据来自 build 写进快照的 coverage（裁边前的原始极值）。旧快照没有该字段 → 跳过，不误报。
         if snap_cov:
@@ -654,6 +809,16 @@ def cmd_final(args):
         json.dump({"values": cells}, f, ensure_ascii=False)
     print(f"final rows: {len(final)} -> {csv_path}, payload -> {os.path.join(outdir,'payload.json')}")
 
+    # 记下本批覆盖的行区间：下次拿同一份快照重跑时，assert_no_overlap 会据此拦住。
+    # 语义是"已生成过 payload"而不是"写入成功" —— 脚本管不到写入那一步
+    # （kdocs 由 agent 调 update_range_data、local 由 editor_sdk 写），多拦一次远好过漏拦。
+    _dates = [r.get("提出时间") for r in final if isinstance(r.get("提出时间"), int)]
+    _wm = write_watermark(outdir, start, len(final),
+                          max(_dates) if _dates else "",
+                          label=os.path.basename(args.preview))
+    print(f"[watermark] 本批占第 {_wm['start_row']}~{_wm['last_row']} 行"
+          f"（{_wm['generated_at']}）-> {os.path.join(outdir, WATERMARK_NAME)}")
+
 
 if __name__ == "__main__":
     ensure_utf8_stdio()
@@ -671,7 +836,12 @@ if __name__ == "__main__":
     p2.add_argument("--workbook", default=None)
     p2.add_argument("--snapshot", default=None,
                     help="云文档快照 json（WPS 通道）；与 --workbook 二选一，用于自动算追加起始行")
-    p2.add_argument("--start-row-excel", default=None)
+    p2.add_argument("--start-row-excel", default=None, type=int,
+                    help="显式指定追加起始行（Excel 行号）。不给时由末数据行推断；"
+                         "给了也仍会复核该行是否为空 —— 确认要覆盖它才配 --force")
+    p2.add_argument("--force", action="store_true",
+                    help="跳过落表前的两道复核（① 目标行非空 ② 与上一批生成区间重叠）。"
+                         "默认关闭：复核拦下的正是「静默覆盖历史数据」与「重复追加」，别当常规开关用")
     rs = p2.add_mutually_exclusive_group()
     rs.add_argument("--reuse-position", dest="reuse_position", action="store_true", default=None,
                     help="强制开启岗位列复用（默认取 config.rules.reuse_position_column）")

@@ -27,7 +27,7 @@ import argparse
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from common import (load_config, is_placeholder, require_dir, require_file,
-                    warn_if_inside_git_repo, ensure_utf8_stdio)
+                    warn_if_inside_git_repo, ensure_utf8_stdio, counterparty_keyword)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
@@ -131,7 +131,7 @@ def render(cfg, prompt, allow_unfilled=False):
 
 
 def render_transcript(lines, cfg):
-    kw = ((cfg.get("people", {}) or {}).get("counterparty_keyword") or "").strip()
+    kw = counterparty_keyword(cfg)   # 与 build/export 共用同一个"对方关键字"解析口径
     if not kw or is_placeholder(kw):
         kw = "对方"
     handler = ((cfg.get("people", {}) or {}).get("handler") or "").strip()

@@ -1,0 +1,17 @@
+{
+  "_comment": "判定子代理的产出契约 —— 全项目唯一真相源。脚本从这里读；references/agent-prompt-zh.txt 的【输出】一节是它的**人工渲染版**，由 smoke_test.py 的契约一致性断言守护。改这里就必须同步改提示词，反之亦然 —— 单边改动会让自检当场变红。为什么值得一份文件：这两处曾各写一份、只靠一句注释里的『一一对应』维系，改一边忘另一边时，子代理的合法产出会被判『不合契约』而整批卡住。",
+  "fields": ["chat", "O", "N", "ask_date", "L", "Q", "R", "S", "outcome", "v_date", "w_date", "evidence", "note"],
+  "required": ["O", "L", "ask_date"],
+  "date_fields": ["ask_date", "v_date", "w_date"],
+  "q_values": ["数据处理", "优化", "需求", "bug", "答疑"],
+  "r_values": ["高", "中", "低"],
+  "s_values": ["1", "2", "3", "4", "5"],
+  "outcome_label": {
+    "done": "答复完成",
+    "default_done": "默认完成(数据修改)",
+    "rejected": "已拒绝(记录)",
+    "no_reply": "无回复(记录)",
+    "vague": "笼统抱怨(记录)",
+    "pending": "未确认完成"
+  }
+}

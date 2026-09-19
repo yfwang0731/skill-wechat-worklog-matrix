@@ -19,6 +19,23 @@ payload*.json
 merged_preview.csv
 final_rows.csv
 
+# 写入水位：`final` 记下本批占用的行区间，用于挡住"拿旧快照重跑"的重复追加
+.last_write.json
+
+# 子代理产出：含**聊天原文（evidence）**与真人姓名。它落在 `--out-dir`，
+# 而 --out-dir 一旦指到 wechat_pilot/ 之外，原本就没有任何东西兜住它。
+# ⚠️ 只能写 `agent_` + 通配 —— 注意**不能用字符组里带连字符**的写法（如 `agent[-_0-9]*.json`）：
+#    字符组里的 `-` 照样匹配连字符，`agent-contract.json` 还是会被吞。
+#    早先写的 `agent*.json` 就是这么**顺手吞掉了 `references/agent-contract.json`** ——
+#    那是子代理产出契约的**唯一真相源**，于是它**从没被 git 跟踪**：本地有它所以自检全绿，
+#    CI 与新克隆里都没有它，v1.2.0 发布时 CI 4/4 全红、17 项失败全源于此。**别放宽这个 glob。**
+agent_*.json
+
+# 这两个默认落在 **cwd**：`pipeline.py probe --dump` 与 `position_reuse --history`。
+# 从仓库根目录跑就会直接进仓库 —— README 还手把手教人 dump 出 probe.json。
+probe.json
+history_positions.json
+
 # 判定规则行为验证的产物（`rules_check.py plan`）
 # ⚠ prompt_rendered.txt 是**渲染后的完整提示词** —— 含处理人姓名、**我方标识（微信号）**、
 #   对方关键字、服务对象、业务系统描述。这是全流程里最敏感的文件之一。

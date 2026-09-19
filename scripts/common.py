@@ -58,6 +58,20 @@ def load_config(path=None):
     return None, None
 
 
+def counterparty_keyword(cfg):
+    """取「对方关键字」：`people.counterparty_keyword` 优先，缺省时回落 `scope.name_filter`。
+
+    为什么要兜底：这两个键**指的是同一个东西**（对方的名字/关键字），只是用途不同 ——
+    `people.counterparty_keyword` 用来剥「提出人」里的岗位前缀、并渲染提示词的
+    `{{对方关键字}}`；`scope.name_filter` 用来筛会话。但 `config.example.json` 里两处
+    占位符都写着「对方筛选关键字」，看不出区别，于是**只填一个、另一个静默为空**：
+    要么筛不出会话，要么岗位前缀不剥。两个键都缺时返回空串（调用方自行决定报不报错）。
+    """
+    people = str((cfg.get("people") or {}).get("counterparty_keyword") or "").strip()
+    scope = str((cfg.get("scope") or {}).get("name_filter") or "").strip()
+    return people or scope
+
+
 def col_index(letter):
     """列字母 -> 0-based 索引（A->0, AA->26）"""
     n = 0
@@ -76,9 +90,24 @@ def col_letter(idx0):
 
 
 # ---------------- 路径自动识别 ----------------
+WECHAT_DB_ROOT_ENV = "WECHAT_DB_ROOT"
+
+
+def wechat_db_root():
+    """微信数据根目录：默认 `~/Documents/xwechat_files`，可用环境变量覆盖。
+
+    为什么要能覆盖：这个默认位置是**写死**的（微信 4.x 的默认安装位置），而实际部署里
+    数据目录可能被挪到别处 —— 换盘、企业统一配置、或者 OneDrive 接管的 Documents
+    （此时真实路径是 `~/OneDrive/Documents/...`）。写死意味着"换台机器就跑不了"，
+    而报错里又只提了这一个路径，用户会误以为微信根本没装。
+    """
+    return os.environ.get(WECHAT_DB_ROOT_ENV) or os.path.join(
+        os.path.expanduser("~"), "Documents", "xwechat_files")
+
+
 def find_db_storage(preferred=None, hint=None):
-    """自动定位微信 db_storage。多账号时可用 hint（账号目录特征串）优选。"""
-    base = os.path.join(os.path.expanduser("~"), "Documents", "xwechat_files")
+    """自动定位微信 db_storage；**多账号且无法唯一确定时报错列出候选**，不替用户猜。"""
+    base = wechat_db_root()
     if preferred:
         if os.path.isdir(preferred):
             return preferred
@@ -89,13 +118,27 @@ def find_db_storage(preferred=None, hint=None):
         subs = [d for d in os.listdir(base)
                 if os.path.isdir(os.path.join(base, d, "db_storage"))]
         if hint:
-            for s in subs:
-                if hint in s:
-                    return os.path.join(base, s, "db_storage")
-        if subs:
+            hits = [s for s in subs if hint in s]
+            if len(hits) == 1:
+                return os.path.join(base, hits[0], "db_storage")
+            if len(hits) > 1:
+                raise FileNotFoundError(
+                    f"{base} 下有 {len(hits)} 个账号目录都匹配 hint「{hint}」：{hits}\n"
+                    "  请用 --db-storage 给出完整路径，或把 hint 写得更具体。")
+        if len(subs) == 1:
             return os.path.join(base, subs[0], "db_storage")
+        if len(subs) > 1:
+            # 旧实现在这里静默取 subs[0] —— 那是"可能把**别人的**聊天解密导出"，
+            # 属于全流程里最不该猜的一类。宁可停下来让人选。
+            raise FileNotFoundError(
+                f"{base} 下有 {len(subs)} 个微信账号目录：{subs}\n"
+                "  **不能替你选** —— 选错会导出另一个人的聊天记录。\n"
+                "  请任选其一：① --db-storage <完整路径>；② 先跑 probe.py accounts 看清单；"
+                f"③ 数据根目录不在默认位置时，设环境变量 {WECHAT_DB_ROOT_ENV} 指过去。")
     raise FileNotFoundError(
-        f"未在 {base} 找到微信 db_storage；请通过 --db-storage 指定或先跑 probe.py accounts。")
+        f"未在 {base} 找到微信 db_storage。请任选其一：① --db-storage <完整路径>；"
+        f"② 设环境变量 {WECHAT_DB_ROOT_ENV} 指向正确的数据根目录；"
+        "③ 先跑 probe.py accounts 看本机能找到什么。")
 
 
 def find_wcdb_tool(explicit=None):
@@ -128,20 +171,33 @@ def md5hex(s):
     return hashlib.md5(s.encode("utf-8")).hexdigest()
 
 
+def parse_date(dstr):
+    """日期字符串 -> `date`；解析不出返回 None。
+
+    **全项目唯一的日期解析入口**：`serial()`（转 Excel 序列号）与 `flag_dups`
+    （跨会话去重的相似度时间窗）都走它。
+
+    为什么必须唯一：曾经两处各写一套 —— `serial` 用宽松正则（接受 `2026/9/5`、
+    `2026年9月5日`），`flag_dups` 用严格 `strptime("%Y-%m-%d")`。于是同一份数据
+    一处认、一处不认，时间窗**静默失效** —— 而它失败的方式是"少判几条重复"，
+    不报错、不留痕，只有人工比对台账才发现。
+    """
+    if not dstr:
+        return None
+    m = re.match(r"^(\d{4})[-/.年](\d{1,2})[-/.月](\d{1,2})", str(dstr).strip())
+    if not m:
+        return None
+    try:
+        return date(*map(int, m.groups()))
+    except Exception:                           # 如 2026-13-45 这类越界日期
+        return None
+
+
 def serial(dstr):
     """日期 -> Excel 序列号（1899-12-30 起）。容错支持 YYYY-MM-DD / YYYY/MM/DD /
     YYYY年M月D日 / 带时间（取前 10 位）等；无法解析返回 ''。"""
-    if not dstr:
-        return ""
-    s = str(dstr).strip()
-    m = re.match(r"^(\d{4})[-/.年](\d{1,2})[-/.月](\d{1,2})", s)
-    if not m:
-        return ""
-    try:
-        y, mo, dd = map(int, m.groups())
-        return (date(y, mo, dd) - date(1899, 12, 30)).days
-    except Exception:
-        return ""
+    d = parse_date(dstr)
+    return "" if d is None else (d - date(1899, 12, 30)).days
 
 
 def pick_sheet(workbook, sheet_hint=None):
@@ -191,6 +247,121 @@ def next_append_row_ws(ws, mapping=None, header_row=1):
             if any(ws.cell(row=r, column=c).value not in (None, "") for c in cols):
                 last = r
     return last + 1
+
+
+# ---------------- 落表前的两道复核（final 与 position_reuse 共用这一套）----------------
+# 为什么必须有：起始行是**算**出来的（末数据行 + 1），而回填是**覆盖式**写入
+# （kdocs 走 update_range_data、local 走 editor_sdk）。起始行一旦算错 —— 快照没读到
+# 数据区、config 的列映射与台账模板脱节、显式 --start-row-excel 手误 —— 就是整片盖掉
+# 历史数据，而且**没有任何检查会发现**。此前只守住了 start >= 2，start == 2 时仅打印告警。
+
+WATERMARK_NAME = ".last_write.json"
+
+
+def target_row_intruders(ws, row, max_col=None):
+    """目标行上非空单元格的列号（升序）；空列表表示这一行是干净的。
+
+    刻意扫**整行**而不是只扫已映射列：没被映射的列（备注、右侧标注）有值，
+    同样说明"这行已经有人了"，照样会被覆盖 —— 而 `last_data_row_ws` 看不见它们，
+    所以它算出的起始行**有可能落在一行已有数据的行上**。这正是要复核的原因。
+    """
+    if ws is None or not row:
+        return []
+    n = max_col or (ws.max_column or 0)
+    return [c for c in range(1, n + 1)
+            if ws.cell(row=row, column=c).value not in (None, "")]
+
+
+def assert_target_row_empty(ws, row, force=False):
+    """写前复核：追加起始行必须是空行，否则拒绝写入。
+
+    `ws is None`（没给表格来源）时无从复核，直接放行 —— "既没给表格来源、又没显式
+    行号"另有一条既有守卫负责拦截，不必在这里重复。
+    """
+    if force or ws is None or not row:
+        return
+    hits = target_row_intruders(ws, row)
+    if not hits:
+        return
+    shown = "、".join(col_letter(c - 1) for c in hits[:10])
+    more = f" 等 {len(hits)} 列" if len(hits) > 10 else ""
+    raise SystemExit(
+        f"✗ 追加起始行第 {row} 行**不是空行**（{shown}{more} 有值）—— 写入会覆盖它。\n"
+        "  起始行是算出来的（末数据行 + 1），它非空通常意味着：\n"
+        "    ① 快照/工作簿没读到数据区，末数据行偏小；\n"
+        "    ② 台账模板或列映射与 config 不一致；\n"
+        "    ③ 显式 --start-row-excel 填错了行。\n"
+        "  请先核对目标行；确认就是要在这一行上写入时，加 --force 跳过本检查。")
+
+
+def _now_iso():
+    """本机当前时间（带 +08:00 偏移）。
+
+    与 probe / export / sheet_snapshot 的时区口径一致：那三处都把微信时间当东八区，
+    水位时间戳若用系统本地时区，跨时区比对会得出错误结论。
+    """
+    from datetime import datetime, timedelta, timezone
+    return datetime.now(timezone(timedelta(hours=8))).isoformat(timespec="seconds")
+
+
+def watermark_path(out_dir):
+    return os.path.join(out_dir, WATERMARK_NAME)
+
+
+def read_watermark(out_dir):
+    """读上次生成 payload 的水位；没有文件返回 None。
+
+    文件存在但读不出时**不阻塞**流程：水位只是"防重复追加"的辅助判据，真正的硬防线
+    是目标行复核。为它把整条链卡死得不偿失，但必须把这件事说出来。
+    """
+    p = watermark_path(out_dir)
+    if not os.path.isfile(p):
+        return None
+    try:
+        with open(p, encoding="utf-8") as f:
+            d = json.load(f)
+        return d if isinstance(d, dict) else None
+    except Exception as e:
+        print(f"⚠ 水位文件读不出（{p}：{type(e).__name__}）—— 本次跳过水位检查，"
+              "请自行确认不会与上一批重叠。")
+        return None
+
+
+def write_watermark(out_dir, start_row, rows, max_ask_date="", label=""):
+    """记录本批**已生成过 payload** 的区间。
+
+    语义刻意是"生成过"而不是"写入成功"：脚本管不到写入那一步（kdocs 由 agent 调
+    update_range_data、local 由 editor_sdk 写），而**多拦一次的代价远小于漏拦** ——
+    漏拦意味着静默重复追加。
+    """
+    payload = {
+        "start_row": int(start_row),
+        "last_row": int(start_row) + max(0, int(rows) - 1),
+        "rows": int(rows),
+        "max_ask_date": str(max_ask_date or ""),
+        "generated_at": _now_iso(),
+        "label": label,
+    }
+    os.makedirs(out_dir, exist_ok=True)
+    with open(watermark_path(out_dir), "w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False, indent=2)
+    return payload
+
+
+def assert_no_overlap(start_row, wm, force=False):
+    """本次起始行与上次已生成过的区间重叠时拒绝 —— 防同一批被重复追加。"""
+    if force or not wm:
+        return
+    last = wm.get("last_row")
+    if not isinstance(last, int):
+        return
+    if int(start_row) <= last:
+        raise SystemExit(
+            f"✗ 本次追加起始行第 {start_row} 行，与上次已生成 payload 的区间"
+            f"（第 {wm.get('start_row')}~{last} 行，{wm.get('generated_at', '未知时间')}）**重叠**。\n"
+            "  常见成因：用同一份快照重跑，或本批时间范围与上一批重叠 —— 落表会重复追加。\n"
+            "  正常做法是重新读表生成新快照（末数据行会推进到上次写入之后）；\n"
+            "  确认确实要重跑时，加 --force 跳过本检查。")
 
 
 def require_openpyxl():
@@ -486,14 +657,23 @@ def workbook_from_snapshot(snap):
 # 避免"final 内置"与"position_reuse 独立"两条路各写一套而逐渐走偏。
 
 def position_columns(mapping):
-    """从 column_mapping 解析 (提出人列, 岗位列)（1-based）。
+    """从 column_mapping 解析 (提出人列, 岗位列)（1-based）；缺任一键返回 (None, None)。
 
-    缺映射时退回常见列位（提出人=O=15, 岗位=N=14）。返回 (col_person, col_post)。
+    **缺键的语义是"台账没有这两列"**，不是"配置不完整"：`column_mapping` 由 `probe`
+    依**表头名**生成（见其 `COLUMN_ALIASES`），表里没有「提出人岗位」这一列，mapping 里
+    就没有这个键 —— 而「提出人岗位」本来也不在 `probe` 的必需列清单里（只有
+    需求描述 / 提出时间 / 提出人 / 解决人 四个）。
+
+    所以这里**不再退回写死的 O=15 / N=14**：台账没有的列，凭什么按"常见列位"去写？
+    旧实现那样做会把岗位写进完全无关的列，还自称"兜底"，且直接违反核心原则 #2
+    「列位置靠表头名识别，不写死 A~AA」。
+
+    调用方拿到 (None, None) 时应**跳过岗位复用**：没有这两列，本来就没有岗位可复用。
     """
     mp = mapping or {}
-    col_person = col_index(mp["提出人"]) + 1 if mp.get("提出人") else 15
-    col_post = col_index(mp["提出人岗位"]) + 1 if mp.get("提出人岗位") else 14
-    return col_person, col_post
+    if not (mp.get("提出人") and mp.get("提出人岗位")):
+        return None, None
+    return col_index(mp["提出人"]) + 1, col_index(mp["提出人岗位"]) + 1
 
 
 def read_history_positions(sheet, header_row, end_row, col_person, col_post):

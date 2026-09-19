@@ -42,7 +42,7 @@ from datetime import datetime, timezone, timedelta
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from common import (merge_range_data, store_to_rows, col_index, workbook_from_snapshot,
-                    load_json_file, ensure_utf8_stdio)
+                    load_json_file, ensure_utf8_stdio, load_config, last_data_row_ws)
 
 TZ = timezone(timedelta(hours=8))
 
@@ -182,6 +182,12 @@ def cmd_build(args):
 def cmd_inspect(args):
     snap = load_json_file(args.snapshot, "快照（--snapshot）")
     wb = workbook_from_snapshot(snap)
+    # 给了 --config 就按它的列映射算「追加起始行」—— 判据与 final **完全一致**（见下面的注释）。
+    mapping, header_row = {}, 1
+    if getattr(args, "config", None):
+        excel_cfg = (load_config(args.config) or {}).get("excel", {}) or {}
+        mapping = excel_cfg.get("column_mapping") or {}
+        header_row = int(excel_cfg.get("header_row") or 1)
     print(f"[snapshot] {args.snapshot}")
     print(f"  source={snap.get('source')}  拉取时间={snap.get('fetched_at')}")
     doc = snap.get("doc") or {}
@@ -195,13 +201,24 @@ def cmd_inspect(args):
             if vals:
                 print(f"     第{r}行（{len(vals)} 个非空）: " + " | ".join(vals[:12]) +
                       (" …" if len(vals) > 12 else ""))
-        # 末数据行（以行内任一非空为准）
-        last = 0
-        for r in range(s.max_row, 0, -1):
-            if any(v != "" for v in s.row_values(r)):
-                last = r
-                break
-        print(f"     末非空行 = {last} → 追加起始行 {last + 1}")
+        # 末数据行：**判据必须与 final 一致**，否则这里打印的「追加起始行」根本不是
+        # final 会写入的那一行 —— 照着它填 --start-row-excel 就会错位。
+        # 没给 --config 时只能给"行内任一非空"的粗算，而必须让人**看清那是粗算**：
+        # final 用的是「**已映射列**有值」（common.last_data_row_ws），只认台账的业务列；
+        # 尾部行若只在别处有值（备注、右侧标注列），两个数字会差一截。
+        if mapping:
+            last = last_data_row_ws(s, mapping, header_row)
+            tail = "（按 config 的列映射算，与 final 同判据）"
+        else:
+            last = 0
+            for r in range(s.max_row, 0, -1):
+                if any(v != "" for v in s.row_values(r)):
+                    last = r
+                    break
+            tail = ("（粗算：行内任一非空。final 用的是「已映射列有值」，结果可能更小；"
+                    "加 --config 可看同一判据下的值）")
+        print(f"     末数据行 = {last or '无法判定'} → 追加起始行 "
+              f"{last + 1 if last else '无法判定'} {tail}")
         if s.num_formats:
             sample = list(s.num_formats.items())[:3]
             print(f"     已记录 {len(s.num_formats)} 个单元格数字格式，如 "
@@ -274,6 +291,9 @@ def main():
 
     p2 = sub.add_parser("inspect", help="查看快照内容概要")
     p2.add_argument("--snapshot", required=True)
+    p2.add_argument("--config", default=None,
+                    help="给了它，「追加起始行」就按 config 的列映射算 —— 与 final 完全同判据；"
+                         "不给则只给一个粗算值（行内任一非空），两者可能不同")
 
     p3 = sub.add_parser("plan", help="打印建议的 kdocs 读表调用体")
     p3.add_argument("--file-id", default=None)

@@ -18,7 +18,7 @@ import argparse
 from datetime import datetime, timezone, timedelta
 
 from common import (md5hex, col_index, col_letter, last_data_row_ws, load_json_file,
-                    open_local_workbook, ensure_utf8_stdio)
+                    open_local_workbook, ensure_utf8_stdio, wechat_db_root)
 
 TZ = timezone(timedelta(hours=8))
 
@@ -53,7 +53,7 @@ DATE_FIELDS = ("提出时间", "计划时间", "完成时间")
 
 # ---------------- accounts ----------------
 def cmd_accounts(args):
-    base = os.path.join(os.path.expanduser("~"), "Documents", "xwechat_files")
+    base = wechat_db_root()      # 默认 ~/Documents/xwechat_files，可用 WECHAT_DB_ROOT 覆盖
     out = []
     if os.path.isdir(base):
         for d in sorted(os.listdir(base)):

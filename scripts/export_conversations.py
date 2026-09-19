@@ -25,7 +25,7 @@ import sys
 import argparse
 from datetime import datetime, timezone, timedelta
 
-from common import md5hex, load_config, ensure_utf8_stdio
+from common import md5hex, load_config, ensure_utf8_stdio, counterparty_keyword
 
 TZ = timezone(timedelta(hours=8))
 SHARDS = ["message_2.db", "message_1.db", "message_3.db"]   # m2 最老 → m3 最新
@@ -183,7 +183,9 @@ def main():
     out = args.out or os.path.join(out_cfg.get("dir", "./wechat_pilot"), "transcripts")
     since = args.since or scope.get("since") or "1970-01-01"
     until = args.until or scope.get("until")
-    name_filter = args.name_filter or scope.get("name_filter")
+    # people.counterparty_keyword / scope.name_filter 互相兜底：两者指同一个"对方关键字"，
+    # 只填一个时另一个静默为空 —— 要么筛不出会话，要么岗位前缀不剥（见 config.example.json）
+    name_filter = args.name_filter or counterparty_keyword(cfg)
     sessions = args.session or scope.get("sessions") or []
     groups = list(scope.get("groups") or []) + (args.group or [])
 
@@ -275,13 +277,27 @@ def main():
                 if bn > 0:
                     pick.append((bu, d))
             print(f"[export] 按关键字「{name_filter}」筛出 {len(pick)} 个会话")
+        # 点名的群**不能无条件收下**：与上面按关键字筛的那条路不同，这里既不过消息数、
+        # 也不过时间窗 —— 时间窗内 0 条的群照样会产出一个只有标题行的**空转录文件**
+        # （真机实测：两个 0 条的群各留下一个空文件），既浪费又让人以为"这批跑到了东西"。
+        # SKILL.md 第 2 步本就承诺"被点名的群 0 条时要如实报告"，这里把承诺落地。
         for g in groups:
+            gn = count_msgs(g)
+            if gn <= 0:
+                print(f"  ⚠ 点名的群「{disp2.get(g, g)}」({g}) 在时间窗内 0 条消息，已跳过 —— "
+                      f"请核对该群最后发言时间；确实要收它就把 scope.since 放宽。")
+                continue
             pick.append((g, disp2.get(g, g)))
     pick = list(dict.fromkeys(pick))
     if not pick:
-        print("✗ 没有匹配到任何会话。请检查 config 的 scope.sessions / scope.name_filter，"
-              "或先跑 probe.py sessions 看看有哪些会话。")
-        return
+        # 零导出必须**非零退出**：此前只是 print 后 return（退出码 0），而 pipeline 靠退出码
+        # 判成败 —— 于是"一条都没匹配到"被当成成功，整条链继续跑完、最后产出一批空矩阵。
+        # 零匹配几乎总是筛选条件写错（时间范围 / 处理人 / 关键字），值得直接停下。
+        sys.exit(
+            "✗ 没有匹配到任何会话，已中止（零导出会让整条链带着空数据往下走）。\n"
+            "  请检查 config 的 scope.sessions / scope.name_filter，"
+            "或先跑 probe.py sessions 看看有哪些会话。\n"
+            "  若这个时间窗确实没有消息，那是筛选条件需要调整，而不是让它静默产出空矩阵。")
 
     stats = {"undecoded": 0}
     for username, dname in pick:

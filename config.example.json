@@ -14,7 +14,7 @@
     "_source_comment": "local=本地 xlsx（openpyxl 读 / editor_sdk 写）；kdocs=WPS 云文档（agent 代调 kdocs 连接器读快照 / 写 rangeData）。两条通道算法完全一致，只换 I/O。",
     "workbook": "<需求跟踪矩阵 xlsx 绝对路径（source=local 时用）>",
     "kdocs": {
-      "_comment": "source=kdocs 时用。定位方式三选一：link（推荐，整条 WPS 链接）/ file_id / name（走搜索，可能同名）。⚠ `link` 只是**给人看的备注**，脚本不读它 —— 你要自己调 get_share_info 把它换成 file_id/drive_id。脚本真正读的只有 file_id / drive_id / worksheet_id / date_numfmt。",
+      "_comment": "source=kdocs 时用。定位方式三选一：link（推荐，整条 WPS 链接）/ file_id / name（走搜索，可能同名）。⚠ `link` 只是**给人看的备注**，脚本不读它 —— 你要自己调 get_share_info 把它换成 file_id/drive_id。脚本真正读的是 file_id / worksheet_id / date_numfmt；**drive_id 写在这里不会被读**（它只出现在快照 meta 与 sheet_snapshot.py 的 --drive-id 上）。",
       "link": "<WPS 文档链接，如 https://www.kdocs.cn/l/<link_id>>",
       "file_id": "<或直接给 file_id>",
       "drive_id": "<可选，file_id 能定位时可不填>",
@@ -61,13 +61,13 @@
       "<我方微信号>",
       "<我方微信昵称>"
     ],
-    "counterparty_keyword": "<对方筛选关键字，用于筛联系人（渲染进提示词 {{对方关键字}}）>",
+    "counterparty_keyword": "<对方关键字：剥「提出人」里的岗位前缀 + 渲染进提示词 {{对方关键字}}。留空则自动回落到 scope.name_filter>",
     "service_object": "<服务对象：对方单位/客户名称，可选，渲染进提示词 {{服务对象}}>"
   },
   "scope": {
     "since": "2026-05-14",
     "until": null,
-    "name_filter": "<对方筛选关键字>",
+    "name_filter": "<对方关键字：用于筛会话（按名字匹配会话目录）。留空则自动回落到 people.counterparty_keyword>",
     "sessions": [],
     "groups": []
   },

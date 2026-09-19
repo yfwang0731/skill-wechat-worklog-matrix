@@ -51,6 +51,7 @@ def run_probe_json(cmd):
 def cmd_probe(args):
     cfg, cfg_path = load_config(args.config)
     cfg = cfg or {}
+    print(f"[pipeline] config = {os.path.abspath(cfg_path) if cfg_path else '(未找到 config.json —— 仅账户与表头不需要它)'}")
     out = {"config_path": cfg_path, "accounts": [], "sessions": [], "workbook": None}
 
     print("=" * 60)
@@ -165,7 +166,17 @@ def cmd_run(args):
     decrypted = os.path.abspath(acct.get("decrypted") or os.path.join(base_abs, "output", "decrypted"))
     db_storage = acct.get("db_storage") or None
 
+    # 子进程的 cwd 是 scripts/，它们各自 load_config() 时只能靠
+    # 显式参数 → WM_CONFIG → cwd/config.json → SKILL_ROOT/config.json 兜底 ——
+    # 也就是说 **`--config` 指的若是别处的 config，子进程根本看不见它**：
+    # 真机实测过（`--config` 指向带 name_filter=海通 的配置，导出却读了 skill 根下的另一份，
+    # 筛到 0 个会话后中止；换成一份"合法但范围不同"的配置，就会导出错误范围且**毫无提示**）。
+    # 所以这里显式把解析出来的 cfg_path 透传下去，并把路径打出来，便于核对到底用了哪份配置。
+    cfg_abs = os.path.abspath(cfg_path)
+    print(f"[pipeline] config = {cfg_abs}")
+
     if not args.skip_decrypt:
+        # decrypt.py 不吃 --config（只认 --db-storage/--tool/--output），无需透传
         dcli = ["decrypt.py", "--output", decrypted]
         if db_storage:
             dcli += ["--db-storage", db_storage]
@@ -175,7 +186,9 @@ def cmd_run(args):
         if rc.returncode != 0:
             sys.exit("✗ 解密失败。确认微信前台登录后重试（必要时 --reextract）。")
 
-    cli = ["export_conversations.py", "--decrypted", decrypted, "--out", tx_dir]
+    # 必须透传 --config：否则 export 会退回到 SKILL_ROOT/config.json（见上）
+    cli = ["export_conversations.py", "--config", cfg_abs,
+           "--decrypted", decrypted, "--out", tx_dir]
     if args.since:
         cli += ["--since", args.since]
     rc = run(*cli)

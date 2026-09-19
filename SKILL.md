@@ -21,6 +21,9 @@ agent_created: true
 
 **做什么**：把微信里**对方（客户）**提的系统需求，整理成台账的一批**新行**，追加到需求跟踪矩阵。历史行永远只读。
 
+**何时用**：要按微信记录**更新/补充需求跟踪矩阵**、要读微信 4.x 本地记录、要把微信里的需求**登记进台账**，
+或用户只说「改 WPS 上那个文档」——不用给本地文件也能干（见「表格来源：两条通道」）。
+
 **先认通道**（`config.excel.source`，其余环节两条通道**算法完全一致**）：
 
 | 用户给的 | `source` | 台账在哪 | 读 / 写 |
@@ -47,33 +50,31 @@ agent_created: true
 > 所以解密必须发生在 ① 和 ② **之间**，而不是等到 ④。顺序写错会卡在"没有会话可确认"。
 
 **三条不许破的规矩**（历史上都真栽过；第 1、3 条见「核心原则」#7 / #5，第 2 条见「交互式流程」第 4 步）：
-
-1. **绝不静默**：拿不到"追加起始行"、子代理产出不合契约、快照读不到数据区 —— 一律**报错退出**，不猜、不兜底、不降级。
-2. **人工裁决必须在回填之前**：`preview` 必须给用户删行/合并，不许跳过直接写台账。
-3. **单元格只放业务结果**：备注等列不写判定依据/分析过程。
+**绝不静默**（拿不到关键输入一律报错退出，不猜不兜底）、**人工裁决必须在回填之前**、**单元格只放业务结果**。
 
 **卡住了先看哪儿**：
 
 | 症状 | 去哪节 |
 |---|---|
 | 不知道要问用户什么 | 第 2 步「一次性确认」 |
-| 表格读不到 / 末行算错 / 岗位列空着 | 「WPS 通道读表」→「岗位复用」 |
+| 表格读不到 / 末行算错 / 岗位列空着 | 「WPS 通道读表」（`references/kdocs-channel.md`）→「岗位复用」 |
 | 该不该记这一条、记成什么 | 「判定规则」（含 Q 列取值域） |
-| 写回失败 / 值被引擎改了 | 「云文档接口约束」；纯文本风险见 `references/workflow-notes.md`「云文档纯文本风险」 |
+| 写回失败 / 值被引擎改了 | 「云文档接口约束」（`references/kdocs-channel.md`）；纯文本风险见 `references/workflow-notes.md`「云文档纯文本风险」 |
 | 命令和参数记不住 | 末尾「速查」 |
 
 > **首次使用前先看「环境依赖」**：解密要第三方 `wcdb-key-tool`（灰色工具，只读本机、数据不出机器），
 > **须用户明确同意**后才用。
 
-## 何时使用
-
-- 要根据微信聊天记录**更新/补充需求跟踪矩阵**。
-- 要读微信 4.x 的本地聊天记录。
-- 要把微信里的需求**登记进台账**。
-- 用户只说「改 WPS 上那个文档」——不用给本地文件也能干（见「表格来源：两条通道」）。
-
 ## 环境依赖（首次使用前）
 
+- **仅支持 Windows** —— 微信 PC 客户端与 `wcdb-key-tool` 都只在这一端，主链在 macOS / Linux 上跑不通。
+  CI 也只跑 Windows（`.github/workflows/selftest.yml`），**别向用户承诺跨平台**。
+- **命令一律在 skill 根目录执行**（`…/skills/wechat-worklog-matrix/`）—— 本文档所有示例都按这个
+  前提写（`pipeline.py` 在根目录，其余脚本在 `scripts/`）。换到别的目录跑会 `can't open file`。
+- **微信数据目录**默认 `~/Documents/xwechat_files`（微信 4.x 的默认位置）。装在别处、或被
+  OneDrive 接管了 `Documents` 时，设环境变量 `WECHAT_DB_ROOT` 指过去。
+  **本机有多个微信账户时不会替你选**：必须显式给 `--db-storage`，否则报错并列出候选
+  （选错账号会把别人的聊天导出来）。
 - **Python 3.9+**，且**全流程用同一个解释器**。换了没装库的解释器不会报错，但会静默漏内容。
 - **`pip install zstandard` —— 强烈建议**。微信把长文本/图片/引用/合并转发/通话等消息以 ZSTD 压缩存储，
   缺库只会输出占位标记，**会漏需求**（真机 8 条压缩消息里 4 条含需求正文）。
@@ -83,20 +84,15 @@ agent_created: true
   缺库时会给出 `pip install openpyxl` 的明确提示，不会抛裸 `ImportError`。
 - **金山文档连接器** —— 仅**云文档通道**需要，不需要 openpyxl。
 - **wcdb-key-tool** —— 解密用，**第三方且不在 skill 内**。它是灰色工具（只读本机、数据不出电脑），
-  **使用前须经用户确认**：
-
-  ```bash
-  git clone https://github.com/TANGandXUE/wcdb-key-tool scripts/tools/wcdb-key-tool
-  # 或设环境变量 WCDB_KEY_TOOL 指向 wcdb_key_tool_windows.py
-  ```
-
-  口令缓存 `~/.wcdb-key-tool/wechat-passphrase.json` 有效时无需重登；失效需重跑 `extract`（**微信须前台**）。
+  **使用前须经用户确认**。获取方式见 README「安装」，或设环境变量 `WCDB_KEY_TOOL` 指向
+  `wcdb_key_tool_windows.py`。口令缓存 `~/.wcdb-key-tool/wechat-passphrase.json` 有效时无需重登；
+  失效需重跑 `extract`（**微信须前台**）。
   **一台机器可能有多个微信账户**，所以调 `decrypt.py` 时必须显式给 `--db-storage <目录>` ——
   脚本内部会给 wcdb-key-tool 传 `--db-dir`，但**那是第三方工具的参数，不是 `decrypt.py` 的**，
   直接写给 `decrypt.py` 会被 argparse 拒绝。
 - **`python scripts/smoke_test.py --full`** —— 改完代码先跑它。不碰真实数据与网络，
   覆盖纯函数、CLI 守卫契约、离线端到端链路、仓库卫生与编码，失败以退出码 1 结束；
-  CI（`.github/workflows/selftest.yml`，os × python × 依赖 共 8 格）跑的就是它。
+  CI（`.github/workflows/selftest.yml`，python × 依赖 共 4 格）跑的就是它。
 - **改代码的两条硬约定**（CI 会拦）：
   ① 新增 / 修改 `__main__` 入口时，必须在**任何输出之前**调用 `common.ensure_utf8_stdio()` ——
   Windows 的标准流编码是 cp1252，中文输出会崩，而**本地是 UTF-8 测不出来**；
@@ -176,7 +172,7 @@ python pipeline.py probe [--workbook <xlsx> | --snapshot <快照json>] --dump <�
 **`excel.column_mapping` 与 `excel.header_row` 不能手填** —— 把第 1 步探测②的输出直接粘过去：
 
 ```bash
-python probe.py workbook --workbook <xlsx> --json        # 或 --snapshot <快照json> --json
+python scripts/probe.py workbook --workbook <xlsx> --json   # 或 --snapshot <快照json> --json
 ```
 
 这两个键是 `build_matrix_rows final` 的**必需输入**（缺 `column_mapping` 会拿不到列位、无法生成 payload），
@@ -190,9 +186,23 @@ python pipeline.py run                     # 解密 → 导出 → 分包（产�
 python scripts/build_matrix_rows.py preview --src <output.dir>/transcripts/_out --out <_out>/merged_preview.csv
 #   ↑ 这一步会**先校验子代理产出契约**（形状/必填/值域/日期可解析），不合契约直接报错退出、
 #     完整清单落 <_out>/validation_report.txt；**没有跳过开关**。通过后交用户裁决（删行/合并）。
+#     契约本体在 references/agent-contract.json（字段/必填/Q·R·S 值域/outcome 标签）；
+#     提示词里那一节是它的人工渲染版，两边由自检逐项比对 —— 改一边不改另一边会红。
+# ↑ --remove/--merge 里的「序号」指 **preview CSV 的「序号」列**，**不是 Excel 行号**；
+#   `--merge "30:52"` = 把第 52 条并进第 30 条。填了不存在的序号会直接报错（不静默忽略）。
 python scripts/build_matrix_rows.py final --preview <_out>/merged_preview.csv \
        --remove "42,50" --merge "30:52" --start-row-excel <起始行> --out-dir <_out>
 ```
+
+> `final` 落表前有**两道硬复核**，过不了直接报错退出（是拦截，不是告警）：
+> ① **追加起始行必须是空行** —— 扫**整行**，未映射列有值也算数（台账右侧的备注/标注列
+>    就是这样让"末数据行"算偏的）。⚠ 它**要读表**：没给 `--workbook`/`--snapshot` 时无从复核，
+>    只敲 `--start-row-excel` 会得到一句"无法复核"告警 —— 那条路上的手误没人替你兜。
+> ② **不与上一批重叠** —— 比对 `--out-dir` 下的 `.last_write.json`（记录本批**已生成过**
+>    payload 的行区间）。⚠ 它**跟着 `--out-dir` 走**（换目录就是另一套水位），且记的是
+>    "生成过"而非"写入成功" —— 所以改完 `--remove`/`--merge` 重跑也会被它拦下，
+>    这是**故意**的：宁可多拦一次，也不漏拦一次重复追加。
+> 确认就是要覆盖 / 要重跑时，加 `--force` 显式绕过 —— **别把它当常规开关**。
 
 **回填按 `config.excel.source` 分两路**：
 
@@ -225,14 +235,21 @@ payload 格式，只有「读表 / 回填」两端的 I/O 不同。
 | 环节 | `local`（本地 xlsx） | `kdocs`（WPS 云文档） |
 |---|---|---|
 | 读表头/末行 | `probe.py workbook --workbook <xlsx>`（openpyxl） | agent 取数 → `sheet_snapshot.py build` → `probe.py workbook --snapshot <json>` |
-| 岗位复用 | `final` 内置（读 workbook 历史，零成本） | 同样 `final` 内置，**前提是「第 2 趟」把行读全**（见下）；读不到时才用 `--history <json>` 手写兜底 |
+| 岗位复用 | `final` 内置（读 workbook 历史，零成本） | 同样 `final` 内置，**前提是「第 2 趟」把行读全**（见「WPS 通道读表」）；读不到时才用 `--history <json>` 手写兜底 |
 | 算追加起始行 | `build_matrix_rows.py final --workbook <xlsx>` | `build_matrix_rows.py final --snapshot <json>` |
 | 回填 | payload → `tencent-local-office-edit` | payload → `to_kdocs_payload.py` → agent 调 `sheet.update_range_data` |
 | 额外依赖 | openpyxl | 金山文档连接器 |
 
-云文档之所以要**经过「快照」**：连接器的 `sheet.*` 都是**只有 agent 能调的 MCP 工具，Python 脚本调不到**。
-所以读表由 agent 取数落盘、脚本再读快照；写表由脚本产出请求体、agent 去调工具。
-**不要把连接器当成脚本可 import 的库**，也不要在脚本里直连它。
+**云文档通道的完整做法**见「WPS 通道读表」等三节（`references/kdocs-channel.md`）；这里只留要点：
+
+- 连接器的 `sheet.*` 都是**只有 agent 能调的 MCP 工具，Python 脚本调不到** → 读表走「agent 取数 → 快照 →
+  脚本读快照」，回填走「脚本出请求体 → agent 调工具」。**别在脚本里直连它，也别当成可 import 的库。**
+- **读表分两趟**（第 1 趟认表头，第 2 趟按列映射只读关键列），但第 2 趟 `rowTo` 必须**读到表末** ——
+  岗位复用靠它把 提出人 + 提出人岗位 读进来。
+- **回填用 `sheet.update_range_data`**（幂等、按坐标），写完**必须 `get_range_data` 回读核对**；
+  单次最多 **100 条 `rangeData`**（`to_kdocs_payload.py` 已自动分批）。
+- 值一律以 `opType:"formula"` 写入 → `= + - @ '` 开头、带前导零、≥16 位纯数字的文本会被引擎静默改写；
+  `to_kdocs_payload.py` **默认自动转义**，不要关（`--no-escape-risky-text` 仅在确需按公式写时用）。
 
 - **中间产物流程结束要清理**：`raw_*.json` / `sheet_snapshot.json` / `kdocs_update*.json` /
   `validation_report.txt`（云文档那几条含真实表格内容与文档 id，报告里还有 agent 文件名）。
@@ -242,77 +259,6 @@ payload 格式，只有「读表 / 回填」两端的 I/O 不同。
   `final --start-row-excel <Excel 行号>` 由你显式指定、跳过自动推算；
   `position_reuse.py --start-row <Excel 行号>` 是它的扫描起点（只动这一行之后的新行）；
   `config.excel.start_row` 是**兜底配置项**，只在没给表格来源时才用得上。
-
-### WPS 通道读表（分两趟，避免整表进上下文）
-
-```bash
-# 0) 定位文档（三选一，推荐给链接）
-#    链接：从 URL 取 link_id → get_share_info → file_id / drive_id
-#    文件名：search_files 搜索（可能同名，务必让用户确认）
-#    再 sheet.get_sheets_info 取工作表清单、worksheet_id、已用区域 range.rowTo
-#    建议把 file_id / drive_id / worksheet_id 写进 config.excel.kdocs，后续不用重复搜
-
-# 1) 打印建议的读表调用体（含 file_id/worksheet_id/range 占位）
-python scripts/sheet_snapshot.py plan --file-id <id> --worksheet-id <n> [--rows N] [--cols N]
-#    第 1 趟：只读前 3 行 × 全部列（认表头）→ agent 把 sheet.get_range_data 的返回**原样**存 raw_hdr.json
-
-# 2) 重建快照 → 解析表头列映射
-python scripts/sheet_snapshot.py build --raw raw_hdr.json --out <output.dir>/sheet_snapshot.json
-python scripts/probe.py workbook --snapshot <output.dir>/sheet_snapshot.json --json
-
-# 3) 第 2 趟：按列映射只读关键列（需求描述/提出时间/提出人/提出人岗位/解决人…）→ raw_cols.json → 再 build
-#    ⚠ rowTo 必须**读到表末**（不要只读前几行）：岗位复用要靠这一趟把 提出人+提出人岗位 读进来。
-#      读全后回包很大，但**不必担心撑爆上下文** —— 宿主会把它自动**落盘**成文件，
-#      直接拿那个落盘文件当 --raw 即可（实测依据见 references/workflow-notes.md「岗位复用」）。
-python scripts/sheet_snapshot.py build --raw raw_hdr.json --raw raw_cols.json --out <output.dir>/sheet_snapshot.json
-python scripts/sheet_snapshot.py inspect --snapshot <output.dir>/sheet_snapshot.json   # 核对末行/追加行
-```
-
-- `build` 会给每张子表写一条 **`coverage`**（本次读表**实际覆盖**到的行列范围，裁边之前的原始极值）
-  和 `trimmed`（裁边后的实际长宽）。`final` 用它做两条前置检查：**行够不到历史区 → 直接报错**；
-  列没覆盖到 提出人/提出人岗位 → 告警（可能没读，也可能该列历史区本来就全空）。
-  ⚠ 回包**不带请求范围**（只有稀疏的 `rangeData`），所以 `coverage` 只能说明"看到了哪里"、
-  不能自证"请求了多大范围"。
-
-- **`get_range_data` 返回稀疏数组**（只含有值的单元格，行列 0-based）；`build` 会重建成密集网格，
-  裁掉尾部/右侧空行列，并记录 `num_formats`。
-- **只想定位末数据行**时，用 `get_typed_value`（A1 记法）更省。但它**会跳过空单元格、无法行对齐**，
-  所以**不要**用它读关键列去建「人→岗位」映射——要行级定位必须用 `get_range_data`。
-
-### WPS 通道回填
-
-```bash
-python scripts/to_kdocs_payload.py --payload payload.json   --out kdocs_update.json
-python scripts/to_kdocs_payload.py --payload payload_n.json --out kdocs_update_n.json
-```
-
-产出 `calls` 数组（每项即一次 `sheet.update_range_data` 的 arguments，已按 100 条上限分批），
-并按 `excel.date_columns` 自动补日期 `format` op（`numfmt` 取 `excel.kdocs.date_numfmt`）。
-
-- **写入必须用 `sheet.update_range_data`**（幂等、按坐标）。不要用 `sheet.add_row`——非幂等，
-  重试或重复调用会插多行脏数据。
-- **写完必须用 `sheet.get_range_data` 回读同一区域核对**，不能只信返回的 `code: 0`。
-- **日期格式以「最新行」为准**：同一列老行可能是 `yyyy/m/d`、新行是 `yyyy-mm-dd`（真机同列两种并存）。
-  把最新行的写法填进 `excel.kdocs.date_numfmt`。
-- **纯文本值会被表格引擎静默改写，脚本已自动转义**：因为值一律以 `opType:"formula"` 写入，
-  `= + - @ '` 开头、带前导零、或 ≥16 位纯数字的文本会被当公式/数值处理 —— **改完不报错，值悄悄变了**。
-  `to_kdocs_payload.py` **默认给这类值前置一个单引号**：引擎把它当"文本标记"消费掉、
-  **回读值不含引号**（实测无损），并列出命中项与原因；
-  确需按公式写入时才用 `--no-escape-risky-text`（会附带告警说明数据将不一致）。
-  逐条实测（`0012`→12、`=A1`→被求真值、`+86`→86 …）见 `references/workflow-notes.md`「云文档纯文本风险」。
-
-### 云文档接口约束（实测，写错即失败）
-
-- **工作表参数名是 `worksheet_id`**，不是 `sheetId`：`get_sheets_info` / `get_range_data` / `update_range_data`
-  都是这个键名。
-- **单次 `update_range_data` 最多 100 条 `rangeData`**：超出报 `rangeData length 110 exceeds limit 100`。
-  `to_kdocs_payload.py` 已**自动分批**，用输出的 `calls` 逐批调用。
-- **op 数 ≈ 值单元格数，压不下去**：每条 `formula` op 只能写一个值，N 个不同值就是 N 条 op；
-  能合并的只有 `format`/`merge`/`picture` 这类**区域**操作。所以 6 行 × 18 列 ≈ 107 条 op + 几条日期格式、
-  分 2 批调用是**正常量级**，不是脚本啰嗦。
-- **限频**：连接器有 `429001`/`429002` 熔断。不要逐格写、不要密集重试；命中限频要等响应给的时间。
-- **区域保护**：文档若设了区域权限（`sheet.list_protection_ranges`），写入会失败，先让用户解除。
-- **`.ksheet` 智能表格**：字段有类型（日期/单选等），写入形态与 `.xlsx` 不同，先确认文档类型。
 
 ## 岗位复用（`rules.reuse_position_column`，默认开）
 
@@ -341,41 +287,44 @@ python scripts/to_kdocs_payload.py --payload payload_n.json --out kdocs_update_n
 > （落盘文件可直接 `--raw` 喂 `build`，实测 196 格 / 87 KB 全量取回）。
 > `--history` 只保留作**连接器不可用 / 落盘失败**时的降级，且它是**手写**的 —— 见下。
 
-### `--history`（降级通道，需手写）
+### 降级与补跑（`--history` / `position_reuse.py`）
 
-**仓里没有任何脚本会生成这个文件** —— 格式 `{"positions": {"人名": "岗位"}}` 只被**读**，
-你要自己写（`position_reuse.py --out` 写的是 payload，不是它）：
+两条**罕见路径**，都归"快照读不到历史"或"事后补漏"时才用。
 
-```bash
-python scripts/build_matrix_rows.py final --preview merged_preview.csv --start-row-excel 192 \
-       --history history_positions.json     # {"positions": {"张三": "客服", "李四": "财务"}}
-```
-
-只在"快照确实读不到历史、而你又确有把握"时用。**多数情况下更省的做法**：像"备注无岗位、历史也没岗位"
-的首次提法人，表内复用本来救不了（岗位信息根本不在数据里）—— 直接在 `merged_preview.csv` 的
-「提出人岗位」列**裁决时补一个值**即可，成本为零且不依赖历史。
-**不要把"补满岗位"当成必须达成的目标。**
-
-### 独立补跑（`position_reuse.py`）
-
-保留用于事后补漏或自定义区间，与 `final` **共用同一实现**（`common.reuse_position_fill`）。
-
-**必须显式说明"哪些行算本批新行"，否则直接报错退出** —— 判据是"追加起始行 = 末数据行 + 1"，
-从那里向下扫恒为空，所以默认模式永远得 0 条（表格尾部若还有空的"带格式行"，连提示都不打）：
-
-- `--new-rows <final_rows.csv>`（推荐）：从 `final` 产物取新行，Excel 行号 = 起始行 + 序号，
-  **不要求新行已落表**；行号由 `--workbook`/`--snapshot` 推算，或显式 `--start-row`。
-- `--start-row <本批首行号>`：显式指定扫描起点（**会扫该行之后的全部行，含历史**）。
-- 两者都不给 → **报错退出**。
-- 历史行永远只读。
+- **`--history`（需手写）**：**仓里没有任何脚本会生成这个文件** —— 格式
+  `{"positions": {"人名": "岗位"}}` 只被**读**（`position_reuse.py --out` 写的是 payload，不是它）：
+  `final --preview merged_preview.csv --start-row-excel 192 --history history_positions.json`。
+  只在"快照确实读不到历史、而你又确有把握"时用。
+- **多数情况下更省的做法**：像"备注无岗位、历史也没岗位"的首次提法人，表内复用本来救不了
+  （岗位信息根本不在数据里）—— 直接在 `merged_preview.csv` 的「提出人岗位」列**裁决时补一个值**即可，
+  成本为零且不依赖历史。**不要把"补满岗位"当成必须达成的目标。**
+- **`position_reuse.py`（独立补跑）**：与 `final` **共用同一实现**（`common.reuse_position_fill`），
+  用于事后补漏或自定义区间。**必须显式说明"哪些行算本批新行"，否则直接报错退出** ——
+  判据是"追加起始行 = 末数据行 + 1"，从那里向下扫恒为空，默认模式永远得 0 条
+  （表格尾部若还有空的"带格式行"，连提示都不打）：
+  `--new-rows <final_rows.csv>`（推荐，行号 = 起始行 + 序号，**不要求新行已落表**）或
+  `--start-row <本批首行号>`（会扫该行之后的全部行，含历史）；两者都不给即报错。**历史行永远只读。**
 
 ## 判定规则（对方提出 → 我方答复）
 
 生效方式：`merge_cross_session` / `similarity_threshold` / `near_days` 由 `build_matrix_rows` 代码读取；
 `ignore_if_rejected` / `ignore_if_no_reply` / `ignore_vague_complaints` / `data_change_default_done`
 是**判定提示词开关**，由执行代理按 `references/agent-prompt-zh.txt` 的【开关渲染表】注入（不入 pipeline 脚本）；
-`reuse_position_column` 控制岗位复用。把"忽略"类开关设为 `false`，会把被拒/无回复/笼统抱怨的需求
-也登记为待裁决行（`outcome` 分别为 `rejected` / `no_reply` / `vague`）。
+`reuse_position_column` 控制岗位复用。
+
+**`outcome` 六个值**：`done`（我方明确说完成）/ `default_done`（数据修改类默认完成）/
+`rejected`（明确拒绝）/ `no_reply`（无实质回复）/ `vague`（笼统抱怨）/ `pending`（未确认完成）。
+把"忽略"类开关设为 `false`，被拒/无回复/笼统抱怨的需求会登记为待裁决行
+（`rejected` / `no_reply` / `vague`）；`data_change_default_done=false` 时数据修改类落 `pending`。
+
+> ⚠️ **待裁决行（`rejected` / `no_reply` / `vague` / `pending`）的「状态」列留空** ——
+> 不给它们写 `defaults.状态`。否则一条"待人工裁决"的需求在台账里显示"完成"，而备注列又被
+> 强制清空，裁决痕迹会彻底消失。
+>
+> ⚠️ **`rules.ignore_if_no_reply` 与数据修改类特例重叠时，以后者为准**：对方提的是改数据类
+> 需求、我方一句话都没回，也按"默认完成"处理（这类需求本就常"直接去做、不回报"）。
+> 另外子代理只看得到**分包给它的那几个会话**，别的会话里的答复它看不见 —— 提示词因此要求它
+> "拿不准就照常输出，不要因为本会话看不到回复就丢弃"，漏记比多记难发现得多。
 
 - **只记**对方提出的、针对系统的需求；寒暄/通知/闲聊不算。需求**必须可交付** —— 能落成一句
   "改什么 / 修什么 / 加什么"。
@@ -389,8 +338,14 @@ python scripts/build_matrix_rows.py final --preview merged_preview.csv --start-r
   注意**运维性动作与安抚不算完成**（重启系统 / 稍后看 / 换个浏览器 / 清缓存 / 再看看 / 我看看），
   不得据此记为"完成"。
 - **数据修改类特例**（改费用/改单号/录补调数据/导数据…）：没答完成也没拒绝 → 默认已完成，
-  时间取提出日期（`rules.data_change_default_done`）。
-- **同一需求跨会话出现** → 合并一行，提出人取最早提出者（`rules.merge_cross_session`）。
+  时间取提出日期（`rules.data_change_default_done`）。**本条优先于"无实质回复 → 忽略"**。
+- **R（影响级别）** = 高/中/低（批量改数、财务、锁账、全局功能 = 高；琐碎 = 低；中间 = 中）。
+  **S（优先级）** = 1-5，不确定留空。⚠️ 子代理留空的 R 会按 **"中"** 落表。
+- **同一需求跨会话出现** → 标为疑似重复（`rules.merge_cross_session`），**由你在裁决阶段决定**
+  要不要 `--merge`。`--merge a:b` 时**自动保留提出时间较早的那一行**（晚的那条退为字段补充），
+  所以"提出人取最早提出者"是代码保证的，不用你挑。
+  同一会话内的重复（拆行失误、同一个人重提）也会标，但用**更高**的相似度阈值 ——
+  同一会话前后文天然相似，沿用跨会话阈值会误标一堆本不相干的行。
 - **提出时间取首次提出日**（不是我方答复日）；一条消息含多个需求 → 拆多行。
 - **解决人 / 责任人** = `people.handler`。
 - **子代理的 `note` 字段不会落进台账**：它出现在 `merged_preview.csv` 的「备注」列（供你裁决判断，
@@ -501,7 +456,7 @@ python scripts/rules_check.py verify --config config.json --results <工作目�
 | `pipeline.py --config <json> run` | `[--since] [--skip-decrypt] [--reextract]` |
 | `probe.py` | `accounts --hint [--json]`；`sessions --decrypted <dir> [--since] [--keyword] [--json]`；`workbook (--workbook <xlsx> \| --snapshot <json>) [--sheet <关键字>] [--json]` |
 | `sheet_snapshot.py` | `plan --file-id <id> --worksheet-id <n> [--rows] [--cols] [--letters "L,M,O"]`；`build --raw <f>… --out <json> [--sheet <名>] [--worksheet-id] [--file-id] [--drive-id] [--name]`；`inspect --snapshot <json>` |
-| `build_matrix_rows.py` | `preview --src <_out> --out <csv> [--config]`（子代理产出不合契约即报错，完整清单落 `--out` 同目录的 `validation_report.txt`）；`final --preview <csv> [--remove "1,3"] [--merge "a:b"] [--out-dir] (--workbook <xlsx> \| --snapshot <json> \| --start-row-excel N) [--reuse-position \| --no-reuse-position] [--history <json>] [--config]` |
+| `build_matrix_rows.py` | `preview --src <_out> --out <csv> [--config]`（子代理产出不合契约即报错，完整清单落 `--out` 同目录的 `validation_report.txt`）；`final --preview <csv> [--remove "1,3"] [--merge "a:b"] [--out-dir] (--workbook <xlsx> \| --snapshot <json> \| --start-row-excel N) [--reuse-position \| --no-reuse-position] [--history <json>] [--force] [--config]`（`--force` 跳过落表前复核：目标行为空 / 与上批区间重叠） |
 | `position_reuse.py` | `(--workbook <xlsx> \| --snapshot <json> \| --history <json>) --out <json> (--new-rows <final_rows.csv> \| --start-row N) [--override] [--end-row N] [--config]` —— 必须给 `--new-rows` 或 `--start-row`，两者都不给直接报错 |
 | `to_kdocs_payload.py` | `--payload <json> [--out <json>] [--file-id] [--worksheet-id] [--date-cols "M,V,W"] [--date-numfmt yyyy-mm-dd] [--no-date-format] [--no-escape-risky-text] [--batch-size 100] [--config]` |
 | `rules_check.py` | `plan --config <json> [--out <dir>] [--only id1,id2] [--fixtures <json>] [--allow-unfilled]`；`verify --config <json> --results <dir> [--fixtures <json>]` |
@@ -513,9 +468,9 @@ python scripts/rules_check.py verify --config config.json --results <工作目�
 | 账户 | `account.db_storage` / `decrypted`；`dir`（可选，仅人眼识别） | 多账号由用户选 |
 | 表格来源 | `excel.source`（`local` \| `kdocs`） | 决定读表/回填走哪条通道 |
 | 本地表格 | `excel.workbook` / `sheet_match` / `header_row` / `column_mapping` / `date_columns` / `start_row` | 列映射由 probe 依表头生成，勿手填 |
-| 云文档 | `excel.kdocs.link` / `file_id` / `drive_id` / `name` / `worksheet_id` / `date_numfmt` | 用户给的定位形式三选一，**由你解析、代码不读 `link`**：link（推荐，你调 `get_share_info` 换成 `file_id`/`drive_id`）> `file_id` > `name`（搜索，可能同名）。脚本真正读的只有 `file_id` / `drive_id` / `worksheet_id` / `date_numfmt`，`worksheet_id` 写入必填 |
+| 云文档 | `excel.kdocs.link` / `file_id` / `drive_id` / `name` / `worksheet_id` / `date_numfmt` | 用户给的定位形式三选一，**由你解析、代码不读 `link`**：link（推荐，你调 `get_share_info` 换成 `file_id`/`drive_id`）> `file_id` > `name`（搜索，可能同名）。脚本真正读的只有 `file_id` / `worksheet_id` / `date_numfmt`；**`drive_id` 填在 config 里不会被读**（只有 `sheet_snapshot.py --drive-id` 与快照里的 meta 用它），`worksheet_id` 写入必填 |
 | 人员 | `people.handler` / `my_identifiers` / `counterparty_keyword` / `service_object` | 处理人、我方标识、对方筛选关键字、服务对象 |
-| 范围 | `scope.since` / `until` / `sessions` / `name_filter` / `groups` | 时间窗与会话清单 |
+| 范围 | `scope.since` / `until` / `sessions` / `name_filter` / `groups` | 时间窗与会话清单。⚠️ `name_filter` 按名字筛会话时**默认排除群**，所以"关键字 + 群名里也含这个词"时群不会自动进来 —— 要点名群必须写 `groups`；反过来 `groups` 里的群不受关键字约束（时间窗内 0 条会跳过并告警） |
 | 规则 | `rules.*` | 见「判定规则」；`reuse_position_column` 控制岗位复用 |
 | 默认值 | `defaults.*` | 项目编号/名称/是否收费/需求类型/子系统/产生阶段/状态 等固定列填充 |
 | 输出 | `output.dir` / `agents` | 产物目录、并行子代理路数 |

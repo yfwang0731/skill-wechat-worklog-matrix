@@ -137,12 +137,17 @@ def main():
     sheet_hint = excel_cfg.get("sheet_match") or "运维"
     header_row = int(excel_cfg.get("header_row") or 1)
 
-    if not (mapping.get(PERSON_KEY) and mapping.get(POST_KEY)):
-        print("⚠ 警告：config.excel.column_mapping 未包含「提出人/提出人岗位」，"
-              "将退回默认列位（提出人=O, 岗位=N）。建议先跑 probe.py workbook 生成映射。")
     col_person, col_post = position_columns(mapping)
-    print(f"[columns] 提出人=第{col_person}列  岗位=第{col_post}列（来源："
-          f"{'表头映射' if mapping.get(PERSON_KEY) else '默认位置'}）")
+    if col_person is None:
+        # 缺键 = 台账本来就没有这两列（mapping 由 probe 依表头生成）。但独立跑本脚本时
+        # **没有"跳过"的余地**：它的唯一职责就是写岗位列，没有列可写就无事可做 ——
+        # 产出一份空 payload 再 exit 0，属于"看起来跑了、其实什么也没做"。
+        sys.exit(
+            f"✗ column_mapping 里没有「{PERSON_KEY}/{POST_KEY}」—— 台账没有这两列，"
+            "岗位复用无从进行。\n"
+            "  请先跑 probe.py workbook 生成列映射；若台账确实有这两列却没能识别，"
+            "多半是表头名不在内置别名表里（见 SKILL.md「岗位复用」）。")
+    print(f"[columns] 提出人=第{col_person}列  岗位=第{col_post}列（按表头映射）")
 
     # ---- 表格来源（可选：--history 通道不需要）----
     sheet = None
@@ -178,12 +183,20 @@ def main():
             "  从该行向下扫恒为空 → 只会得到 0 条。请任选其一：\n"
             "    --new-rows <final_rows.csv>   # 推荐：从 final 产物取新行（Excel 行号 = 起始行 + 序号）\n"
             "    --start-row <本批首行号>       # 显式指定扫描起点（会扫该行之后的**全部**行，含历史）")
-    start = max(start, header_row + 1)
+    if start < header_row + 1:
+        sys.exit(
+            f"✗ 扫描起点第 {start} 行落在表头及之前（表头在第 {header_row} 行）—— 已中止。\n"
+            f"  此前这里会**静默抬高**到第 {header_row + 1} 行再继续：你给的 --start-row 被\n"
+            "  悄悄改掉，岗位就写到你没预期的行上，而输出里不会有一句提示。请核对行号后重跑。")
 
-    if sheet is not None and start > end:
-        print(f"[warn] 扫描起点 {start} 超过末行 {end}：该区间为空 → 0 条。"
-              f"请确认 --start-row 是否指向本批新行（Excel 行号），"
-              f"或表格来源是否覆盖到了数据区。")
+    # 区间检查**只对「从表格当前内容取行」的模式**做：`--new-rows` 的行号来自 CSV，
+    # 而本批新行**还没写进表格**，start 天然大于表格末行 —— 那是常态，报错就是误伤。
+    if not args.new_rows and sheet is not None and start > end:
+        sys.exit(
+            f"✗ 扫描起点第 {start} 行超过表格末行第 {end} 行：该区间为空，跑下去只会得到 0 条，\n"
+            "  却看着像跑成功了（静默无操作）。\n"
+            "  请确认 --start-row 是否指向要扫描的首行（Excel 行号），或表格来源是否覆盖到了\n"
+            "  数据区 —— 快照没读数据区是最常见的成因（见 SKILL.md「WPS 通道读表」）。")
 
     hist, _ = load_history(args, sheet, header_row, start, col_person, col_post)
     recs = build_records(args, sheet, start, end, col_person, col_post)
