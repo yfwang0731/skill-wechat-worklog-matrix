@@ -49,7 +49,7 @@ agent_created: true
 > **① 为什么要两趟**：②要拿会话清单给用户选，而会话清单**只存在于解密库里** ——
 > 所以解密必须发生在 ① 和 ② **之间**，而不是等到 ④。顺序写错会卡在"没有会话可确认"。
 
-**三条不许破的规矩**（历史上都真栽过；第 1、3 条见「核心原则」#7 / #5，第 2 条见「交互式流程」第 4 步）：
+**三条不许破的规矩**（第 1、3 条见「核心原则」#7 / #5，第 2 条见「交互式流程」第 4 步）：
 **绝不静默**（拿不到关键输入一律报错退出，不猜不兜底）、**人工裁决必须在回填之前**、**单元格只放业务结果**。
 
 **卡住了先看哪儿**：
@@ -67,8 +67,8 @@ agent_created: true
 
 ## 环境依赖（首次使用前）
 
-- **仅支持 Windows** —— 微信 PC 客户端与 `wcdb-key-tool` 都只在这一端，主链在 macOS / Linux 上跑不通。
-  CI 也只跑 Windows（`.github/workflows/selftest.yml`），**别向用户承诺跨平台**。
+- **仅支持 Windows** —— 微信 PC 客户端与 `wcdb-key-tool` 都只在这一端，主链在 macOS / Linux 上
+  跑不通；CI 也只跑 Windows（`.github/workflows/selftest.yml`）。**别向用户承诺跨平台。**
 - **命令一律在 skill 根目录执行**（`…/skills/wechat-worklog-matrix/`）—— 本文档所有示例都按这个
   前提写（`pipeline.py` 在根目录，其余脚本在 `scripts/`）。换到别的目录跑会 `can't open file`。
 - **微信数据目录**默认 `~/Documents/xwechat_files`（微信 4.x 的默认位置）。装在别处、或被

@@ -6,8 +6,8 @@
 # git 对 autocrlf 的读写是**自洽**的（入库 CRLF→LF、检出 LF→CRLF、比对时再归一），
 # 所以 CRLF 不会让「工作区必须干净」那步检查假红 —— 别拿它当理由。
 #
-# 真正的理由只有一条：让不同平台的检出**逐字节一致**。否则同一个 commit 在 Windows
-# 与 Linux 上得到不同字节，git diff、外部校验和、跨平台横向比对都会被换行噪声干扰。
+# 真正的理由只有一条：让不同平台的检出**逐字节一致**。否则同一个 commit 在不同平台上
+# 会得到不同字节，git diff、外部校验和、跨平台横向比对都会被换行噪声干扰。
 * text=auto eol=lf
 *.py text eol=lf
 *.md text eol=lf

@@ -24,7 +24,7 @@ def ensure_utf8_stdio():
     本 skill 的输出**全是中文**，而 Windows 上 Python 的标准流编码跟随控制台代码页
     （实测 GitHub 的 `windows-latest` runner 是 **cp1252**）：一 `print` 中文就
     `UnicodeEncodeError: 'charmap' codec can't encode ...`，**第一行输出就崩**。
-    ubuntu / git-bash 都是 UTF-8，所以这个坑只在 Windows 上炸，本地极易漏。
+    非 Windows 平台的标准流本来就是 UTF-8，所以这个坑只在 Windows 上炸、本地极易漏。
     编码问题不该让工具崩掉 —— 显式切到 UTF-8 + `errors="replace"`。
 
     每个 `__main__` 入口都要在**任何输出之前**调用它（含 `smoke_test.py`）。
@@ -128,8 +128,8 @@ def find_db_storage(preferred=None, hint=None):
         if len(subs) == 1:
             return os.path.join(base, subs[0], "db_storage")
         if len(subs) > 1:
-            # 旧实现在这里静默取 subs[0] —— 那是"可能把**别人的**聊天解密导出"，
-            # 属于全流程里最不该猜的一类。宁可停下来让人选。
+            # 静默取 subs[0] = 可能把**别人的**聊天解密导出，属于全流程里最不该猜的一类。
+            # 宁可停下来让人选。
             raise FileNotFoundError(
                 f"{base} 下有 {len(subs)} 个微信账号目录：{subs}\n"
                 "  **不能替你选** —— 选错会导出另一个人的聊天记录。\n"
@@ -177,7 +177,7 @@ def parse_date(dstr):
     **全项目唯一的日期解析入口**：`serial()`（转 Excel 序列号）与 `flag_dups`
     （跨会话去重的相似度时间窗）都走它。
 
-    为什么必须唯一：曾经两处各写一套 —— `serial` 用宽松正则（接受 `2026/9/5`、
+    为什么必须唯一：两处各写一套就会分叉 —— `serial` 用宽松正则（接受 `2026/9/5`、
     `2026年9月5日`），`flag_dups` 用严格 `strptime("%Y-%m-%d")`。于是同一份数据
     一处认、一处不认，时间窗**静默失效** —— 而它失败的方式是"少判几条重复"，
     不报错、不留痕，只有人工比对台账才发现。
@@ -212,10 +212,10 @@ def last_data_row_ws(ws, mapping, header_row=1):
     """末数据行（1-based），以**全部已映射列**有无值判定；mapping 为空返回 None。
 
     这是「末数据行」的**唯一判据**：`probe.analyze_workbook` 与 `next_append_row_ws`
-    共用它。历史上两处各写一套（probe 用全部映射列，next_append_row 只用
+    共用它。两处各写一套必然分歧（probe 用全部映射列，next_append_row 只用
     "需求描述/提出时间/提出人" 3 个探针列），于是尾部行若只在**别的**映射列
     （如 项目编号）有值，两处就会分歧：next_append_row 算出**更小**的起始行，
-    `final`/`position_reuse` 便据此**静默覆盖**尾行数据（2026-09-11 实跑复现）。
+    `final`/`position_reuse` 便据此**静默覆盖**尾行数据（实测：probe=5 vs final=4）。
     判据统一后，两处必然得出同一个起始行。
 
     **孤儿尾行是预期行为**：只在项目编号之类非探针列有值的尾行会被**当作有效数据行保留**
@@ -253,7 +253,8 @@ def next_append_row_ws(ws, mapping=None, header_row=1):
 # 为什么必须有：起始行是**算**出来的（末数据行 + 1），而回填是**覆盖式**写入
 # （kdocs 走 update_range_data、local 走 editor_sdk）。起始行一旦算错 —— 快照没读到
 # 数据区、config 的列映射与台账模板脱节、显式 --start-row-excel 手误 —— 就是整片盖掉
-# 历史数据，而且**没有任何检查会发现**。此前只守住了 start >= 2，start == 2 时仅打印告警。
+# 历史数据，而且**没有任何检查会发现**。只守住 start >= 2 是不够的 ——
+# start == 2 时仅打印告警同样会盖掉数据。
 
 WATERMARK_NAME = ".last_write.json"
 
@@ -598,8 +599,8 @@ def warn_if_inside_git_repo(path, what="产物"):
         #   而 `git rev-parse --show-toplevel` 把仓库根归一成**长名** ——
         #   两者字符串毫无共同前缀可言，于是 `commonpath` 会算成一个很浅的祖先目录
         #   而不是仓库根，"在仓库内"被误判为"不在"，**告警静默失效**。
-        #   真事故：CI 的 `windows-latest` 上这条一直不生效，而本地 `TEMP` 恰好是长名
-        #   ⇒ 永远复现不了。`realpath` 会把短名展开成长名（Windows 上即 `GetLongPathName`），
+        #   而本地 `TEMP` 通常是长名 ⇒ 本地根本复现不了，只在 CI 的 `windows-latest` 上现形。
+        #   `realpath` 会把短名展开成长名（Windows 上即 `GetLongPathName`），
         #   两边都归一后再比；再用 `normcase` 抹掉盘符大小写差异。
         root = os.path.realpath(root)
         d = os.path.realpath(d)
@@ -665,7 +666,7 @@ def position_columns(mapping):
     需求描述 / 提出时间 / 提出人 / 解决人 四个）。
 
     所以这里**不再退回写死的 O=15 / N=14**：台账没有的列，凭什么按"常见列位"去写？
-    旧实现那样做会把岗位写进完全无关的列，还自称"兜底"，且直接违反核心原则 #2
+    按"常见列位"去写会把岗位写进完全无关的列，还自称"兜底"，且直接违反核心原则 #2
     「列位置靠表头名识别，不写死 A~AA」。
 
     调用方拿到 (None, None) 时应**跳过岗位复用**：没有这两列，本来就没有岗位可复用。

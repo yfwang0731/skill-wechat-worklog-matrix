@@ -17,12 +17,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # 只跑 Windows —— 主链（微信 PC 客户端 + wcdb-key-tool）本就只在 Windows 上有意义，
-        # 留一个 ubuntu 格子等于对外承诺"支持 Linux"，而那条路根本跑不通。
-        # 原先 ubuntu 格**唯一独有**的覆盖是「大小写敏感文件系统」：文档里的文件名写错大小写，
-        # Windows/macOS 上 os.path.exists **判为存在**，只有 Linux 会红。该判据现已下沉到
-        # smoke_doc_refs 的 `_exists_exact`（逐级 os.listdir 精确名比对），本地与 CI 都跑得到 ——
-        # 比原来只在 CI 那一格可跑更强。
+        # 只跑 Windows —— 主链（微信 PC 客户端 + wcdb-key-tool）本就只在 Windows 上有意义。
         # 3.9 是 SKILL.md 声明的最低支持版本，跨代测避免"本地新解释器能跑、用户装不上库"
         python-version: ["3.9", "3.13"]
         # minimal：一个第三方库都不装 —— 守「零依赖也能跑」+「缺库给可执行提示而非裸 traceback」

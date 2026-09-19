@@ -9,7 +9,7 @@
 早期版本默认从第 2 行扫整表，会把历史里位于"该人首个岗位值之后"的空缺格一并回填
 （已实测复现：会静默改写超出用户意图的历史单元格）。
 
-**与 final 的关系（2026-09 起）**：`build_matrix_rows.py final` 已**内置**同一套复用逻辑，
+**与 final 的关系**：`build_matrix_rows.py final` 已**内置**同一套复用逻辑，
 常规流程**一轮写入**即可完成，本脚本不再是必经步骤。保留它是为两个场景：
   1) 事后补跑：把已落表的行补齐岗位；
   2) 自定义范围：--start-row / --end-row 指定任意区间。
@@ -78,7 +78,7 @@ def build_records(args, sheet, start, end, col_person, col_post):
             have = set(rdr.fieldnames or [])
             lack = [c for c in (PERSON_KEY, POST_KEY) if c not in have]
             if lack:
-                # 缺列时旧实现会静默产出 0 条并 exit 0（"看起来跑了其实没做事"）。
+                # 缺列时静默产出 0 条并 exit 0 是不允许的（"看起来跑了其实没做事"）。
                 # 典型来源：列映射里没有「提出人」列 → final_rows.csv 也就没有这一列。
                 sys.exit(f"✗ {args.new_rows} 缺少必需列 {lack}。\n"
                          f"  现有列：{sorted(have)}\n"
@@ -186,7 +186,7 @@ def main():
     if start < header_row + 1:
         sys.exit(
             f"✗ 扫描起点第 {start} 行落在表头及之前（表头在第 {header_row} 行）—— 已中止。\n"
-            f"  此前这里会**静默抬高**到第 {header_row + 1} 行再继续：你给的 --start-row 被\n"
+            f"  **静默抬高**到第 {header_row + 1} 行再继续是不允许的：你给的 --start-row 会被\n"
             "  悄悄改掉，岗位就写到你没预期的行上，而输出里不会有一句提示。请核对行号后重跑。")
 
     # 区间检查**只对「从表格当前内容取行」的模式**做：`--new-rows` 的行号来自 CSV，

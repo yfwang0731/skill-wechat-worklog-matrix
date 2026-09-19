@@ -7,7 +7,7 @@
 
 不绑定任何具体客户、项目或人员——服务对象、项目、会话、处理人全部由使用者通过 `config.json` 配置。
 
-当前版本 [`v1.2.0`](https://github.com/yfwang0731/skill-wechat-worklog-matrix/releases/tag/v1.2.0)　·　变更历史见 [`CHANGELOG.md`](CHANGELOG.md)
+当前版本 [`v1.2.1`](https://github.com/yfwang0731/skill-wechat-worklog-matrix/releases/tag/v1.2.1)　·　变更历史见 [`CHANGELOG.md`](CHANGELOG.md)
 
 [![selftest](https://github.com/yfwang0731/skill-wechat-worklog-matrix/actions/workflows/selftest.yml/badge.svg)](https://github.com/yfwang0731/skill-wechat-worklog-matrix/actions/workflows/selftest.yml)
 
@@ -24,7 +24,7 @@
 - **合规边界**：解密用第三方灰色工具 wcdb-key-tool（只读本机、数据不出电脑、使用前向用户确认）；
   聊天明文与探测中间产物全部留在本地并被 `.gitignore` 排除。
 
-> 运行纪律（拿不到关键输入为何必须报错退出、人工裁决为何不能跳过、单元格里只许放什么）见「核心原则」（`SKILL.md`）——那三条都是历史上真栽过的地方。
+> 运行纪律（拿不到关键输入为何必须报错退出、人工裁决为何不能跳过、单元格里只许放什么）见「核心原则」（`SKILL.md`）。
 
 ## 安装
 
@@ -108,31 +108,23 @@ wechat-worklog-matrix/
 
 ### 自检
 
+一键验证，**不碰真实微信数据与网络**，可随时执行，失败以退出码 1 结束：
+
 ```bash
-python scripts/smoke_test.py        # 33 项：import / 纯函数 / CLI 契约 / 输入路径守卫 / 落表前复核 / 子代理产出契约 / 快照覆盖与表内复用 / frontmatter 额度 / 文档分层与引用结构 / 离线端到端 / 仓库卫生 / 临时目录清理 / 编码
-python scripts/smoke_test.py --full # 再加 3 项依赖 openpyxl、zstandard 的检查
+python scripts/smoke_test.py        # 33 项
+python scripts/smoke_test.py --full # 再加 3 项（openpyxl / zstandard）
 ```
 
-全程**不碰真实微信数据与网络**，可随时执行；失败以退出码 1 结束。覆盖重点在那些
-"**不会报错、却会改错数据**"的路径：缺关键输入必须报错退出、列映射靠表头识别、跨会话去重、
-岗位列只填空缺、云文档请求体分批与键名、Windows 非 UTF-8 控制台下不能崩。
-2026-09 在一台 Windows + 微信 4.1 + WPS 云文档上完整实跑过，修的就是这一批路径。
+覆盖重点在那些**不会报错、却会改错数据**的路径；已在一台 Windows + 微信 4.1 + WPS 云文档上
+完整实跑过全程。CI（[`.github/workflows/selftest.yml`](.github/workflows/selftest.yml)）跑的就是它 ——
+本地与 CI **同一个入口**，共 4 格。
 
-CI（[`.github/workflows/selftest.yml`](.github/workflows/selftest.yml)）跑的就是它 —— 本地与 CI
-**同一个入口**，避免"CI 绿、本地跑不到"或反之，共 4 格：
+其中一条只守**仓库本身**的约定：**文档里不许写编年** —— 版本号与「哪个版本出过什么事」只留在
+[`CHANGELOG.md`](CHANGELOG.md)，其余文件直接说结论。
 
-| 轴 | 取值 | 为什么 |
-|---|---|---|
-| Python | 3.9 / 3.13 | 3.9 是声明的最低支持版本，跨代测避免"你本地能跑、用户装不上库" |
-| 依赖 | minimal / **full** | minimal 守"零依赖也能跑 + 缺库给可执行提示"；full 才跑得到本地通道读表与 ZSTD 解压 |
-
-> **矩阵只有 Windows 一轴** —— 主链（微信 PC 客户端 + `wcdb-key-tool`）本就只在 Windows 上有意义，
-> 留一个 ubuntu 格子等于对外承诺"支持 Linux"，而那条路根本跑不通。它原先唯一独有的覆盖是
-> **大小写敏感文件系统**（文档里文件名写错大小写，Windows / macOS 会判为存在），现已下沉到自检内部，
-> 本地也跑得到 —— 这比只在 CI 那一格可跑更强。
->
-> CI 里还**故意不设** `PYTHONUTF8` / `PYTHONIOENCODING` —— 设了就把 Windows 的 cp1252 缺陷盖住，
-> 那格等于白跑。脚本靠 `common.ensure_utf8_stdio()` 自己把标准流切到 UTF-8。
+> CI 的格怎么切、那条约定守什么、有哪些已知盲区 → 见
+> [`references/workflow-notes.md`](references/workflow-notes.md) 与 `scripts/smoke_test.py` 的
+> `smoke_doc_claims` 注释（判据细节只在那里写一份）。
 
 ## 许可与合规
 

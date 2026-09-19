@@ -171,9 +171,9 @@ def flag_dups(rows, cfg):
             "clean": clean(r.get("L", "")),
             "chat": r.get("chat", ""),
             "date": (r.get("ask_date") or ""),
-            # 走 common.parse_date（全项目唯一入口）：原先这里是严格 strptime，
-            # 只认 YYYY-MM-DD，而 serial() 用宽松正则 —— 同一份 2026/9/5 一处认
-            # 一处不认，时间窗就此静默失效（失败方式是"少判几条重复"，不报错）。
+            # 走 common.parse_date（全项目唯一入口）：严格 strptime 只认 YYYY-MM-DD，
+            # 而 serial() 用宽松正则 —— 同一份 2026/9/5 一处认一处不认，时间窗就此
+            # 静默失效（失败方式是"少判几条重复"，不报错）。
             "d": parse_date(r.get("ask_date")),
         })
 
@@ -223,7 +223,7 @@ def flag_dups(rows, cfg):
             # 同一会话里的重复（子代理拆行失误、同一个人重提）**也要看** —— 只是用
             # **更高**的阈值：同一会话的前后文天然相似（同一业务、同一单号），沿用跨会话
             # 阈值会误标一堆本来不相干的行；而拆行失误产生的两行几乎逐字相同，高阈值
-            # 照样抓得住。此前这里直接 `continue` 跳过同会话 → 那类重复完全无人管。
+            # 照样抓得住。直接 `continue` 跳过同会话的话，那类重复就完全无人管。
             same_chat = pa["chat"] == prep[j]["chat"]
             lb = prep[j]["clean"]
             if not lb:
@@ -250,7 +250,7 @@ PREVIEW_REQUIRED = ["序号", "提出人", "提出人岗位", "提出时间", "�
 
 # ---- 判定子代理的产出契约：**唯一真相源是 references/agent-contract.json** ----
 # 为什么要有这个文件：这套字段与枚举**提示词里也有一份**（references/agent-prompt-zh.txt
-# 的【输出】一节）。两份此前只靠代码注释里一句"一一对应"维系 —— 改一边忘另一边，
+# 的【输出】一节）。两份若只靠代码注释里一句"一一对应"维系，改一边忘另一边时，
 # 子代理的**合法**产出就会被判"不合契约"而整批卡住，或者越界值一路顺进台账。
 # 现在：代码以 json 为准，自检再比对提示词，单边改动必然红。
 AGENT_CONTRACT_PATH = os.path.join(
@@ -293,14 +293,14 @@ except ContractError as _e:
         raise SystemExit(f"✗ {_e}")     # 当脚本跑：干净的一句话 + 非零退出
     raise                                # 被 import（自检）：普通异常 → [FAIL] + 继续跑完
 
-# 「需求归类」的取值域 —— 2026-09-18 从线上台账「需求归类」列**实测 196 格**得到：
+# 「需求归类」的取值域 —— 从线上台账「需求归类」列**实测 196 格**得到：
 # 数据处理 104 / bug 31 / 答疑 27 / 优化 24 / 需求 9。**优化与需求是并存的两种值**。
 # 加新取值前先核对真实模板（这列没有下拉校验，是自由文本，所以更需要白名单兜住）。
 # 取值域本身登记在 agent-contract.json，这里只是读出来。
 Q_VALUES = tuple(CONTRACT["q_values"])
 # 子代理偶尔把「优化或需求」连写成一个值（提示词规则文本曾写成"需求或优化"所致），
-# 而台账里**没有**这个值 → 归一到「需求」。真机实测出现过 3 条，故保留该映射。
-# 2026-09-18 扩容：只收**无歧义**的连写 / 近义写法。有歧义的（"优化需求"同时含两个值）
+# 而台账里**没有**这个值 → 归一到「需求」（真机实测出现过 3 条，故保留该映射）。
+# 扩容只收**无歧义**的连写 / 近义写法。有歧义的（"优化需求"同时含两个值）
 # 刻意不收 —— 硬归一就是替用户做业务判断，交给下面 normalize_q 的"多义不猜"分支。
 QMAP = {"优化或需求": "需求", "功能新增": "需求", "新增功能": "需求",
         "功能改进": "优化", "老功能改进": "优化",
@@ -340,8 +340,8 @@ OUTCOME_LABEL = dict(CONTRACT["outcome_label"])
 _DONE_LABELS = frozenset(OUTCOME_LABEL[k] for k in ("done", "default_done"))
 
 # 契约其余各项同样取自 agent-contract.json —— **别再在别处抄一份**。
-# 硬拦的理由：子代理的错值不会当场报错，而是**一路顺到 final 写进台账**；旧实现只做
-# 宽松兜底（r.get(...)），字段拼错 / 枚举越界 / 日期写成 2026/9/5 都静默通过。
+# 硬拦的理由：子代理的错值不会当场报错，而是**一路顺到 final 写进台账**；宽松兜底
+# （r.get(...)）会让字段拼错 / 枚举越界 / 日期写成 2026/9/5 全部静默通过。
 AGENT_FIELDS = tuple(CONTRACT["fields"])
 AGENT_REQUIRED = tuple(CONTRACT["required"])     # 缺任一 → 对应单元格为空
 AGENT_R_VALUES = tuple(CONTRACT["r_values"])
@@ -542,7 +542,7 @@ def cmd_final(args):
             "  请确认传入的是 **probe 之后的 preview 产物**（列名如「提出人 / 提出时间 / 需求描述」）；"
             "旧版产物用的是带列字母的列名（如「提出人O / 岗位N」），不能直接喂给 final。")
     if not rows:
-        # 0 数据行时旧实现会安静地写出空 final_rows.csv + 空 payload 并 exit 0 ——
+        # 0 数据行时安静地写出空 final_rows.csv + 空 payload 并 exit 0 是错的 ——
         # 属"看起来跑了其实没做事"，与「绝不静默」冲突：明确说出来，让人去查上游。
         raise SystemExit(f"✗ {args.preview} 只有表头、没有任何数据行 —— 没有可生成的行。\n"
                          "  请确认 preview 的输入（_out 下 agent 开头的 json，"
@@ -592,9 +592,9 @@ def cmd_final(args):
             src = next((x for x in rows if x["序号"] == b), None)
             if src is None:
                 continue
-            # **保留较早的那一行**：SKILL.md 承诺"合并一行，提出人取最早提出者"，而此前只做
-            # "用 b 补 a 的空字段" —— 若 a 比 b 晚，提出时间与提出人就都不是最早的，台账记下的
-            # 不是"谁最早提的"。这里比一次日期，晚的一方退为补充来源。（用 parse_date 比，
+            # **保留较早的那一行**：SKILL.md 承诺"合并一行，提出人取最早提出者"，只做
+            # "用 b 补 a 的空字段"不够 —— 若 a 比 b 晚，提出时间与提出人就都不是最早的，
+            # 台账记下的不是"谁最早提的"。这里比一次日期，晚的一方退为补充来源。（用 parse_date 比，
             # 不用字符串比：`2026/9/5` 与 `2026-09-05` 直接比字符串会判反。）
             tb, ts = parse_date(base.get("提出时间")), parse_date(src.get("提出时间"))
             if tb and ts and ts < tb:
@@ -624,8 +624,8 @@ def cmd_final(args):
         # "已经做完"的结论 —— 而备注列又被强制清空，裁决痕迹就此彻底消失。留空更诚实。
         # ⚠️ 判据必须比对**中文标签**：这里的行来自 preview CSV，那一列写的是
         #    OUTCOME_LABEL[outcome]（"答复完成" / "默认完成(数据修改)"），**不是** outcome 英文码。
-        #    本判据曾误写为 `not in ("done", "default_done")` —— 与中文标签恒不相等，
-        #    于是**每一行**都被清空、`defaults.状态` 彻底失效（真机 14 行全中，自检当时无断言）。
+        #    写成 `not in ("done", "default_done")` 就与中文标签恒不相等 ——
+        #    于是**每一行**都被清空、`defaults.状态` 彻底失效，而且没有任何检查会响。
         if "状态" in mapping and str((r.get("结果") or "")).strip() not in _DONE_LABELS:
             row["状态"] = ""
         row["需求描述"] = (r["需求描述"] or "").strip()
@@ -733,7 +733,7 @@ def cmd_final(args):
     if do_reuse and col_person is None:
         # mapping 由 probe 依**表头名**生成：缺这两个键 = 台账本来就没有这两列
         # （「提出人岗位」也不在 probe 的必需列清单里）。没有列可写，跳过是对的，
-        # 也没必要打扰用户 —— 旧实现退回写死的 O/N 列位，会把岗位写进完全无关的列。
+        # 也没必要打扰用户 —— 退回写死的 O/N 列位才真会把岗位写进完全无关的列。
         print("[reuse] column_mapping 无「提出人/提出人岗位」→ 跳过岗位复用（台账无此列）。")
         do_reuse = False
     if do_reuse:

@@ -54,7 +54,7 @@ RISKY_PREFIX = ("=", "+", "-", "@", "'")
 def risky_reason(s):
     """该纯文本在 formula op 里"存进去 ≠ 存回来"的原因；安全则返回 None。
 
-    真机实测（2026-09-11）：**单字符**前缀（`=`/`-`/`+`/`@` 各一个字符）写进去回读仍是
+    真机实测：**单字符**前缀（`=`/`-`/`+`/`@` 各一个字符）写进去回读仍是
     原样的 string、不会被改写，故用 `len(s) > 1` 排除它们 —— 免得把台账里常见的
     占位符 `-` 误判成风险值而多打警告。
     """
@@ -83,7 +83,7 @@ def find_risky_text(cells):
 def escape_risky_text(value):
     """把会被改写的纯文本转成安全的文本字面量：**前置一个单引号**。
 
-    真机验证（2026-09-11，`create_file_with_content` 与 `sheet.update_range_data`
+    真机验证（`create_file_with_content` 与 `sheet.update_range_data`
     两条路径行为一致，回读用 `get_typed_value`）：
 
         0012               -> double 12                    '0012               -> string "0012"

@@ -30,12 +30,12 @@ def _rmtree_force(path):
 
     为什么需要：**Windows 上 git 对象文件是只读的**，`shutil.rmtree(path, ignore_errors=True)`
     遇到它会**静默失败**（异常全被吞掉），于是每跑一次就在 `%TEMP%` 留一个目录、日志毫无提示。
-    实测（本机复现）：临时目录里 `git commit` 后 `.git/objects/xx/yyy` 有 3 个只读文件，
-    `rmtree(ignore_errors=True)` 之后目录**仍在**、3 个文件**一个没删**；先 `chmod S_IWRITE` 再删则干净。
+    实测：临时目录里 `git commit` 后 `.git/objects/xx/yyy` 会生成只读文件，
+    `rmtree(ignore_errors=True)` 之后目录**仍在**、那些文件**一个没删**；先 `chmod S_IWRITE` 再删则干净。
 
     ⚠️ **当前自检未必跑得到这个分支**：本文件唯一的 git 操作是空仓库 `git init`（不产出对象），
-    所以今天的残留是 0 —— 但一旦有人加了 `git commit/clone/checkout` 的检查就会开始漏，
-    而"漏了却不报错"正是最难发现的那种。**同族的 `skill-release` 真栽过**（`%TEMP%` 里积了 43 个）。
+    所以残留是 0 —— 但一旦有人加了 `git commit/clone/checkout` 的检查就会开始漏，
+    而"漏了却不报错"正是最难发现的那种。**别因为它今天不响就当它没用。**
 
     删不掉时**打印告警但不失败**：删不干净可能是杀软/句柄占用这类环境问题，
     把它做成硬失败会变成长期假红 —— 而长期假红的守卫比没有守卫更糟（会被当成噪音无视）。
@@ -323,7 +323,7 @@ def smoke_guards_and_robustness():
     assert next_append_row_ws(wide, None) == 2, next_append_row_ws(wide, None)
 
     # N5: probe 与 final/position_reuse 的「追加起始行」必须**同源同值**。
-    # 尾行只在"非 3 探针列"的映射列有值时，旧实现会算出更小的起始行 → 覆盖尾行。
+    # 尾行只在"非 3 探针列"的映射列有值时，起始行会算小 → 覆盖尾行。
     mp = {"项目编号": "A", "需求描述": "B", "提出时间": "C", "提出人": "D"}
     tail_only_pid = GridWorkbook([GridSheet("运维", [
         ["项目编号", "需求描述", "提出时间", "提出人"],
@@ -371,9 +371,9 @@ def smoke_guards_and_robustness():
 def smoke_write_guard():
     """落表前的两道复核：目标行非空、与上批区间重叠，都必须拦住写入。
 
-    这是 2026-09-18 审查定的 P0：起始行算错时原实现只打印 ⚠ 就继续，而回填是
-    **覆盖式**的（kdocs 走 update_range_data、local 走 editor_sdk）—— 写下去就是盖掉
-    历史数据，且**没有任何检查会发现**。`--force` 是唯一的绕过口，它也必须真的能绕过。
+    起始行算错就写下去 = 盖掉历史数据，且**没有任何检查会发现** —— 回填是**覆盖式**的
+    （kdocs 走 update_range_data、local 走 editor_sdk）。所以目标是空行、且不与上批区间重叠，
+    两道都拦住；`--force` 是唯一的绕过口，它也必须真的能绕过。
     """
     import tempfile
     from common import (GridSheet, assert_target_row_empty, assert_no_overlap,
@@ -447,8 +447,8 @@ def smoke_reuse_position():
     from common import GridSheet, position_columns, read_history_positions, reuse_position_fill
 
     # 列解析：只认表头映射；缺键 → (None, None) = 台账没有这两列，调用方跳过岗位复用。
-    # 曾经这里断言的正是"退回写死的 O/N"（== (15, 14)）—— 那条断言把一个缺陷钉成了契约：
-    # 改行为时它反而拦在路中间（2026-09-18 审查的 A1）。断言该守**意图**，不是守现状。
+    # 断言该守**意图**，不是守现状：这里断言的若改成"退回写死的 O/N"（== (15, 14)），
+    # 就等于把一个缺陷钉成契约 —— 改行为时它反而拦在路中间。
     assert position_columns({"提出人": "O", "提出人岗位": "N"}) == (15, 14)
     assert position_columns({"提出人": "C", "提出人岗位": "B"}) == (3, 2)
     assert position_columns({}) == (None, None), "缺映射不该退回写死的列位"
@@ -646,9 +646,8 @@ def _mk_offline_fixture(d):
         "column_mapping": {"项目编号": "A", "需求描述": "B", "提出时间": "C",
                            "提出人岗位": "D", "提出人": "E", "解决人": "F",
                            # 「状态」必须进夹具：映射里没有它，final 里那段"关态行清空状态"的
-                           # 判据就**一行都不执行** —— 2026-09-19 真机实测证明它会写错
-                           # （拿中文标签比英文枚举 → 条件恒真 → 每一行都被清空、
-                           #  defaults.状态 彻底失效），而当时的夹具照旧全绿。
+                           # 判据就**一行都不执行**（拿中文标签比英文枚举 → 条件恒真 → 每一行
+                           #  都被清空、defaults.状态 彻底失效），而夹具照旧全绿。
                            "状态": "G"},
         "date_columns": ["C"],
     })
@@ -764,7 +763,7 @@ def smoke_offline_e2e():
         assert sorted({v["row"] for v in vals}) == [2, 3], sorted({v["row"] for v in vals})
         # 状态列（G=6）：两行都是 outcome=done（「结果」列写的是**中文标签**"答复完成"），
         # 必须拿到 defaults.状态。判据若拿 outcome 英文码去比中文标签，条件恒真 →
-        # 这里会整列消失。真机 14 行全中过一次，夹具当时因为没映射状态列而毫无察觉。
+        # 这里会整列消失；夹具没映射状态列时，这个洞**一个字都不跑**。
         assert cell[(2, 6)]["string_value"] == "完成", cell.get((2, 6))
         assert cell[(3, 6)]["string_value"] == "完成", cell.get((3, 6))
 
@@ -820,14 +819,13 @@ def smoke_offline_e2e():
 #   ① `smoke_repo_hygiene`：这些名字不得被 git 跟踪，且 `.gitignore` 必须逐条收录；
 #   ② `smoke_doc_structure`：它们**不得命中任何随 skill 分发的文件**。
 # ⚠️ 加通配符时**两头都得钉**：过宽会吞掉"本来就要随 skill 分发"的文件（CI 会响），
-#    过窄会放走"含聊天原文的产物"（**静默** —— 漏掉的代价是隐私，比 CI 报错严重）。
-#    两种错法在 2026-09-19 发 v1.2.0 那天**都真发生过**：
-#      · **过宽**：`agent*.json`（`.gitignore` 与这份名单**各写了一份**）同时命中
-#        `references/agent-contract.json`（子代理产出契约的**唯一真相源**）→ 它**从没被 git 跟踪**：
-#        本地有它、自检全绿；CI 与任何新克隆都没有它 ⇒ **CI 4/4 全红、17 项失败**。
-#        （也别写 `agent[-_0-9]*.json` —— 字符组里的 `-` 照样匹配连字符。）
-#      · **过窄**：紧接着改成的 `agent_*.json` 漏掉**真机形态** `agent<字母>_<账号名>.json`
-#        ⇒ 兜底**静默失效**；而当时的断言只钉了 `agent_1.json` 一种（合成夹具）形态，所以照样全绿。
+#    过窄会放走"含聊天原文的产物"（**静默** —— 漏掉的代价是隐私，比 CI 报错严重）。两种错法：
+#      · **过宽**：`agent*.json` 会命中 `references/agent-contract.json`（子代理产出契约的
+#        **唯一真相源**）⇒ 那个文件进不了仓库：本地有它、自检全绿，而 CI 与任何新克隆里都没有它
+#        （表现是一批检查报"找不到产出契约"）。也别写 `agent[-_0-9]*.json` —— 字符组里的 `-`
+#        照样匹配连字符。
+#      · **过窄**：`agent_*.json` 会漏掉**真机形态** `agent<字母>_<账号名>.json`
+#        ⇒ 兜底**静默失效**；而只钉 `agent_1.json` 一种（合成夹具）形态的断言照样全绿。
 #    **现值 `agent[!-]*.json`** 两头都对（四种形态的断言见 `smoke_doc_structure`）。
 REPO_NEVER_ARTIFACTS = [
     ("config.json", "本地个人配置（含账号目录/路径）"),
@@ -875,10 +873,10 @@ def smoke_repo_hygiene():
     #
     #    只做 (a) 是**结构性不够**的：`git ls-files` 只看**已跟踪**文件，
     #    "未跟踪且未忽略"的产物它根本看不见 —— 而那正是最可能被 `git add -A` 顺手带走的
-    #    状态。这个盲区是**真栽过**的：`rules_check.py plan` 的默认 `--out` 是
-    #    `<cwd>/rules_check_out`，从仓库根目录跑一次就把**渲染后的完整提示词**
-    #    （含我方标识=微信号）写进了仓库，`git status` 冒出一个 `?? rules_check_out/`，
-    #    而当时的名单与 `.gitignore` 都没提到它。
+    #    状态。典型例子：`rules_check.py plan` 的默认 `--out` 是 `<cwd>/rules_check_out`，
+    #    从仓库根目录跑一次就会把**渲染后的完整提示词**（含我方标识=微信号）写进仓库，
+    #    `git status` 里的 `?? rules_check_out/` 正没人管 —— 名单与 `.gitignore`
+    #    缺任何一处，它都会随 `git add -A` 入库。
     #    所以这里补成**双向**：名单里的每一项，`.gitignore` 里都得找得到。
     never = REPO_NEVER_ARTIFACTS      # 单一真相源在模块级（见其定义处的注释）
 
@@ -932,9 +930,9 @@ def smoke_repo_hygiene():
     # 2b) 文档里不得出现**具体的**子代理产出文件名。
     #     真机形态是 `agent<字母>_<账号名>.json`，而账号名往往就是**人名拼音** ——
     #     写一个实例到文档里，等于把真人姓名写进仓库（本仓的合规声明是"不含任何真实姓名"）。
-    #     这条是**真栽过**的：我在 CHANGELOG 里为了说明"校验报告会含带人名拼音的文件名"，
-    #     顺手写了个真机实例。只扫文档：`smoke_test` 自己的合成夹具（`agentA_ok.json` 等）在
-    #     `.py` 里，不属于"文档示例"。示例一律用占位符。
+    #     而"为了说明这个风险"顺手写一个真机实例，正是最容易发生的一种泄漏。只扫文档：
+    #     `smoke_test` 自己的合成夹具（`agentA_ok.json` 等）在 `.py` 里，不属于"文档示例"。
+    #     示例一律用占位符。
     concrete = _re.compile(r"agent[A-Za-z]*_[A-Za-z0-9]+\.json")
     leaked = []
     for f in files:
@@ -1016,7 +1014,7 @@ def smoke_cp1252_stdio():
 
     实测 GitHub 的 `windows-latest` runner 标准流编码是 **cp1252**，而本 skill 的输出
     **全是中文**：没修就是 `print` **第一行**就 `UnicodeEncodeError` 崩掉，而
-    ubuntu / git-bash / 本机工作区都是 UTF-8 ⇒ **本地永远复现不了，只有 CI 的 windows 格子会红**。
+    非 Windows 平台的标准流本来就是 UTF-8 ⇒ **这个缺陷只在 Windows 上炸，平时极易漏掉**。
     这里用子进程把条件造出来，本地也能跑到。
 
     CI 里**故意不设** `PYTHONUTF8` / `PYTHONIOENCODING` —— 设了就把这个缺陷盖住了。
@@ -1051,7 +1049,7 @@ def smoke_cp1252_stdio():
 def smoke_local_channel_full():
     """--full：本地表格通道（openpyxl）读表 + 追加起始行 —— 用临时 xlsx，不碰真实文件。
 
-    云文档通道的快照路径已被 `smoke_offline_e2e` 覆盖，本地通道此前**没有端到端覆盖**。
+    云文档通道的快照路径已被 `smoke_offline_e2e` 覆盖，本地通道也需要一条**端到端覆盖**。
     """
     import json as _json
     import tempfile
@@ -1257,7 +1255,7 @@ def smoke_preview_contract():
         assert "缺少必需列" in (out + err), (out + err)[-300:]
         assert "Traceback" not in (out + err), (out + err)[-300:]
 
-        # ② --new-rows 缺「提出人」列 → 友好报错（旧实现静默 0 条 + exit 0）
+        # ② --new-rows 缺「提出人」列 → 友好报错（不许静默产出 0 条 + exit 0）
         nr = os.path.join(d, "no_person.csv")
         with open(nr, "w", newline="", encoding="utf-8-sig") as f:
             f.write("项目编号,需求描述\nP1,改费用\n")
@@ -1268,7 +1266,7 @@ def smoke_preview_contract():
         assert "缺少必需列" in (out + err), (out + err)[-300:]
 
         # ③ 只有表头、0 数据行的 preview → 说清"没有数据行"，不要误报"缺少必需列"
-        #    （旧实现会安静地写出空 payload 并 exit 0；更早的实现会把它说成列名不对）
+        #    （不许安静地写出空 payload 并 exit 0，也不该把它误报成列名不对）
         empty = os.path.join(d, "empty_preview.csv")
         with open(empty, "w", newline="", encoding="utf-8-sig") as f:
             f.write(",".join(["序号", "会话", "提出人", "提出人岗位", "提出时间", "需求描述",
@@ -1288,7 +1286,7 @@ def smoke_preview_contract():
 def smoke_q_values():
     """产出契约一致性：**agent-contract.json（唯一真相源）** ↔ 代码 ↔ 提示词 ↔ 线上台账取值。
 
-    实测口径：2026-09-18 读线上台账「需求归类」列 196 格 → 数据处理 104 / bug 31 /
+    实测口径：读线上台账「需求归类」列 196 格 → 数据处理 104 / bug 31 /
     答疑 27 / 优化 24 / 需求 9。**优化与需求并存**，而 `优化或需求` 从不在台账里出现
     （它是提示词旧措辞"需求或优化"诱导出的连写值，由 QMAP 归一掉）。
     这类不一致**不抛异常**（只是把错值写进台账），所以只能靠断言守。
@@ -1340,7 +1338,7 @@ def smoke_q_values():
         "必须原样返回交给人工裁决")
 
     # ⑤ 产出契约的**唯一真相源**（references/agent-contract.json）与提示词必须一致。
-    # 这两处此前各写一份、只靠代码注释里一句"一一对应"维系：改一边忘另一边时，
+    # 这两处若各写一份、只靠代码注释里一句"一一对应"维系：改一边忘另一边时，
     # 子代理的**合法**产出会被判"不合契约"而整批卡住，或者越界值一路顺进台账 ——
     # 两种情况都不抛异常。现在单边改动必然在这里变红。
     from build_matrix_rows import (AGENT_FIELDS, AGENT_REQUIRED, AGENT_R_VALUES,
@@ -1379,12 +1377,12 @@ def smoke_q_values():
 def smoke_doc_cli_flags():
     """文档里的 CLI 形状不能与 argparse 打架。
 
-    具体守一条**踩过的**：`pipeline.py` 的 `--config` 是**全局**选项，必须写在子命令之前；
-    参数速查表一度把它列在 `pipeline.py probe/run` 的参数里，照抄会得到
+    具体守一条**形状**：`pipeline.py` 的 `--config` 是**全局**选项，必须写在子命令之前；
+    把它列在 `pipeline.py probe/run` 的参数里，照抄就会得到
     `error: unrecognized arguments`（argparse 不会把子命令后的未知选项回溯给上层解析器）。
 
-    **`README.md` 也在扫描范围内**（v1.1.2 起）：它的「快速开始」是给人照抄的最小命令序列，
-    此前**只读 `SKILL.md`** —— README 里的命令写错形状不会有任何检查会响，而读者照抄会直接报错。
+    **`README.md` 也在扫描范围内**：它的「快速开始」是给人照抄的最小命令序列，
+    只读 `SKILL.md` 是不够的 —— README 里的命令写错形状不会有任何检查会响，而读者照抄会直接报错。
     刻意只守**形状**，不要求 README 的命令与 `SKILL.md` 逐条同名：那段"能立刻跑起来"的序列是
     README 的职责，强行对齐只会把它逼成一句指针。
     """
@@ -1533,7 +1531,7 @@ def smoke_agent_contract():
     """判定子代理产出契约（分支②）：坏值必须在 **preview 阶段**被拦下。
 
     为什么值得单列一条：子代理的错值**不会当场报错**，而是顺着 preview → final 一路写进台账。
-    旧实现只做宽松兜底（`r.get(...)`）：字段拼错、枚举越界、日期写成"5月14日"全部静默通过。
+    宽松兜底（`r.get(...)`）会放过这些：字段拼错、枚举越界、日期写成"5月14日"全部静默通过。
     这里逐类造一遍，确认四类硬拦 + 契约外字段只告警 + **没有跳过开关**。
     """
     import json as _json
@@ -1706,7 +1704,7 @@ def smoke_snapshot_coverage():
 
         # ⑦ 文档反向断言：已作废的结论不许作为**现行说法**复活
         #   刻意按行判、而不是全文子串：允许它作为"曾如此、已作废"的历史说明留痕
-        #   （补一个正确的结论而不说明"原来错在哪"，下一个人还会照旧走老路）。
+        #   （补一个正确的结论而不说明"错在哪"，下一个人还会照旧走老路）。
         stale = ("云文档不做表内复用", "云文档通道不做表内岗位复用", "云文档拿不到")
         for fname in ("SKILL.md", os.path.join("references", "workflow-notes.md")):
             txt = open(os.path.join(ROOT, fname), encoding="utf-8").read()
@@ -1774,9 +1772,9 @@ def smoke_skill_frontmatter():
 def smoke_rules_check_positive():
     """`rules_check.py` 的**正向路径**：渲染 + 盲评 case 生成 + `verify` 的三类差异分类。
 
-    为什么单列一条：这两个子命令的**产出**此前零回归覆盖 —— smoke 里 `rules_check` 只出现过
-    两次，**都是错误路径**（坏 JSON config / `--results` 缺失）。而 `verify` 的
-    「误记 / 漏记 / 结果不符 + 待裁决 + 未判定」分类正是本支的核心价值，此前只手工跑过一次。
+    为什么单列一条：这两个子命令的**产出**长期零回归覆盖 —— smoke 里 `rules_check` 出现过的
+    两次**都是错误路径**（坏 JSON config / `--results` 缺失）。而 `verify` 的
+    「误记 / 漏记 / 结果不符 + 待裁决 + 未判定」分类正是本支的核心价值，只靠手工跑不算覆盖。
     分支② 的产出契约校验反而有完整断言，两边**不对称**。
 
     **真实判定仍由独立子代理跑、不进 CI**（要模型、非确定性，塞进去只会 flaky）；
@@ -1932,14 +1930,14 @@ def smoke_tmp_cleanup():
 def smoke_doc_layering():
     """文档分层：`workflow-notes.md` 与 `README.md` **不得逐字复述** `SKILL.md` 的规则。
 
-    为什么需要：这两个文件曾在「云文档接口」「纯文本风险」「岗位复用」「判定规则」等**六个主题上
-    各写一份**、措辞还不同 —— 双份真相必然漂移（同一件事改一处漏一处，谁都不知道哪份是对的）。
-    现已收敛成"`SKILL.md` 写规则、`workflow-notes.md` 写依据"，但那只是**写在文档里的约定**：
-    没有守卫，下一个人复制粘贴一句规则过去，就又是双份。
+    为什么需要：`SKILL.md` 与 `workflow-notes.md` 一旦在「云文档接口」「纯文本风险」「岗位复用」
+    「判定规则」这类**同一个主题上各写一份**、措辞还不同，双份真相必然漂移（同一件事改一处漏一处，
+    谁都不知道哪份是对的）。现在的分工是"`SKILL.md` 写规则、`workflow-notes.md` 写依据"，但那只是
+    **写在文档里的约定**：没有守卫，下一个人复制粘贴一句规则过去，就又是双份。
 
     **README 为什么也算进来**：它是仓库门面，最容易被顺手抄一遍 SKILL.md 的句子；
-    而它此前**完全不在任何守卫的比对范围内**（`smoke_doc_cli_flags` 也只读 SKILL.md）——
-    实测那处"绝不静默改写已有数据"的 bullet 就是逐字复述，**没有任何检查看得见它**。
+    而它**不在任何守卫的比对范围内**（`smoke_doc_cli_flags` 也只读 SKILL.md）——
+    "绝不静默改写已有数据"那条 bullet 就是逐字复述，**没有任何检查看得见它**。
 
     判据刻意只查**逐字重复的长行**（剥离列表前缀、归一空白与标点后完全相同、且 ≥30 字符）：
     近似重复（同一件事的规则面 vs 依据面）是**允许**的，机器判不准，硬拦会天天误报。
@@ -2019,7 +2017,7 @@ def smoke_doc_layering():
 
 
 # ========================= 文档结构类守卫 =========================
-# 起因：2026-09-18 的三步走（结构分层 → 引用/歧义/冲突 → 全流程）里，这些检查都只是**一次性探针**。
+# 起因：三步走（结构分层 → 引用/歧义/冲突 → 全流程）里，这些检查都只是**一次性探针**。
 # 探针跑完就再没人跑，下一个人改文档照样踩同一个坑 —— 而且**真踩了**：结构重排把
 # `workflow-notes.md` 的一节改名，却没同步那句指向它的「见「…」」，悬空引用就这样进了仓库，
 # 而**现有守卫一条都看不见它**（它既不是坏 JSON，也不是不一致的枚举）。
@@ -2096,6 +2094,46 @@ def _doc_lines(rel):
     return open(os.path.join(ROOT, rel), encoding="utf-8").read().splitlines()
 
 
+# 随 skill 分发的文件里，**二进制格式**不当文本读（`git ls-files` 会一并列出被跟踪的二进制）。
+# ⚠ 这是一份**不完备**的扩展名预筛：列出的只是本仓已知会出现的几种。漏进来的二进制不会被
+#   静默跳过 —— 它会在 §⑥ 的"读不出"断言里报出来（见那里的说明）。要真完备就得按**内容**判
+#   （开头若干字节含 NUL 即视为二进制），代价是每次多读一遍文件字节。
+_BIN_EXT = {".png", ".jpg", ".jpeg", ".gif", ".ico", ".pdf", ".xlsx", ".zip",
+            ".pyc", ".woff", ".woff2"}
+
+
+def _shipped_files():
+    """仓库里**随 skill 分发的**文本文件的相对路径（POSIX 斜杠），**排除 CHANGELOG.md**。
+
+    CHANGELOG 是唯一允许写编年的地方，所以排除它 —— 其余文件都该"直接说结论"。
+
+    名单取自 `git ls-files`（= **被跟踪的文件**），与 `smoke_repo_hygiene` 同一个事实源。
+    刻意**不**用 `os.walk`：walk 看到的是**磁盘**，而磁盘上还有用户本地跑过流程留下的产物
+    （`wechat_pilot/`、`*.db`、`config.json` …）—— 要还原出"哪些真会随 skill 分发"，就得再写
+    一套"按 `.gitignore` 派生剔除"，而那套在 `.venv/`、`node_modules/`、`*.dist-info/` 上会
+    **漏网**；更要命的是剔除用的 `fnmatch` 在 Windows 上大小写不敏感、在 Linux 上敏感 ⇒ 文件集
+    **随平台变**，而"哪些文件在仓库里"不该有平台差异。`git ls-files` 给的是**精确名**。
+
+    返回 `None` 表示**取不到**（git 不可用 / 不是 git 仓库）—— 调用方必须跳过并说明，
+    不能把"没扫到"当成"没问题"。
+    """
+    try:
+        pr = subprocess.run(["git", "-C", ROOT, "ls-files", "-z"],
+                            capture_output=True, timeout=90, env=dict(os.environ))
+    except Exception:                      # 本机没装 git / git 不在 PATH
+        return None
+    if pr.returncode != 0:                 # 不是 git 仓库（例如只拷了目录、没有 .git）
+        return None
+    out = []
+    for rel in pr.stdout.decode("utf-8", "replace").split("\0"):
+        if not rel.strip() or rel == "CHANGELOG.md":
+            continue
+        if os.path.splitext(rel)[1].lower() in _BIN_EXT:
+            continue
+        out.append(rel)
+    return out
+
+
 def _visible_lines(text):
     """返回 [(行号, 行)]，**剔除围栏代码块**。
 
@@ -2158,10 +2196,9 @@ def smoke_doc_refs():
         """大小写敏感的"存在"判断：**逐级用 `os.listdir` 精确名比对**。
 
         为什么不直接用 `os.path.exists`：Windows 与 macOS 的文件系统**大小写不敏感** ——
-        文档里写 `references/KDOCS-CHANNEL.md`（真实文件是小写）会被判为"存在"，只有 Linux 会红。
-        本测试原先靠 CI 的 **ubuntu 格子**兜这一条，而那个格子几乎只为这一条而存在。
-        2026-09-18 删掉 os 轴（8 格 → 4 格）后，若不在这里自证，大小写写错就成了
-        **两个平台都看不见**的死角，而这类缺陷只有读者点空链接才会暴露。
+        文档里写 `references/KDOCS-CHANNEL.md`（真实文件是小写）会被判为"存在"—— 文件名大小写
+        写错，在大小写不敏感的文件系统上**两个平台都看不见**，只有读者点空链接才会暴露。
+        所以这里必须自证，不能指望"换个平台就会红"。
         """
         cur = ROOT
         for part in re.split(r"[\\/]+", rel):
@@ -2180,7 +2217,7 @@ def smoke_doc_refs():
     # 在 Windows 上跑仍然全绿，没有第二处会提醒你。这两条一正一反把它钉死。
     assert _exists_exact("SKILL.md"), "精确名判断自身坏了：连 SKILL.md 都判为不存在"
     assert not _exists_exact("skill.md"), \
-        "大小写不敏感 —— 这个判据在 Windows 上等于没写（正是删掉 ubuntu 格后要补回来的那条）"
+        "大小写不敏感 —— 这个判据在大小写不敏感的文件系统上等于没写"
 
     def _resolves(tok):
         base = os.path.basename(tok)
@@ -2261,7 +2298,7 @@ def smoke_doc_refs():
     # 起因：把一节从 A 文件搬到 B 文件后，`见 \`A.md\`「那节」` 依然会被 C 判为"可解析"
     # （C 的判据只是"全仓某个标题包含这个名"），但读者点进 A 是**找不到**的 ——
     # 一类完全静默的悬空引用。C 的 `见[^\n]{0,6}「` 也管不到它：中间隔着一个反引号路径
-    # （远超 6 字符），所以"跨文件指针指错文件"此前没有任何守卫看得见。
+    # （远超 6 字符），所以"跨文件指针指错文件"没有任何守卫看得见。
     _titles_of = {}
 
     def _titles_in(rel):
@@ -2421,7 +2458,7 @@ def smoke_doc_structure():
     assert not ghost, f"README 目录树列了磁盘上不存在的条目：{ghost}"
     # 根目录条目比对必须走 `.gitignore` 派生放行：`config.json` 是 SKILL.md 第 3 步
     # 让用户"从 config.example.json 复制"出来的**本地文件**（`wechat_pilot/` 同理），
-    # 它本来就不该出现在 README 的目录树里。此前这里只有硬编码的 (".git","README.md")，
+    # 它本来就不该出现在 README 的目录树里。只硬编码 (".git","README.md") 是不够的，
     # 于是用户一复制出 config.json，本地自检就报"README 漏列 config.json" —— 误报，
     # 而且 CI 里没有它、永远看不见（又一个"本地红、CI 绿"）。
     unlisted_root = [x for x in sorted(os.listdir(ROOT))
@@ -2430,10 +2467,10 @@ def smoke_doc_structure():
     assert not unlisted_root, f"README 目录树漏列了根目录条目：{unlisted_root}（新增文件要同步）"
 
     # ---- ④′ 随 skill 分发的文件**不得**被 .gitignore 吞掉 ----
-    # 真事故（2026-09-19，v1.2.0 发布时被 **CI 4/4 全红**抓出来）：`.gitignore` 里为忽略子代理
-    # 产出写的 `agent*.json` 顺手吞掉了 `references/agent-contract.json` —— 那是子代理产出契约的
-    # **唯一真相源**，结果它**从没被 git 跟踪**：本地有它、自检全绿；CI 与任何新克隆都没有它，
-    # 一次 CI 17 项失败全源于此。这一类"本地过、远端挂"本地只有断言守得住。
+    # 为忽略子代理产出写的 glob 一旦过宽，就会顺手吞掉 `references/agent-contract.json` ——
+    # 那是子代理产出契约的**唯一真相源**，被吞掉就**进不了 git**：本地有它、自检全绿，
+    # 而 CI 与任何新克隆里都没有它（表现是一批检查报"找不到产出契约"）。
+    # 这一类"本地过、远端挂"，本地只有断言守得住。
     _ship = ["%s/%s" % (d, f) for d in ("scripts", "references")
              for f in sorted(os.listdir(os.path.join(ROOT, d))) if f != "__pycache__"]
     _ship += [f for f in sorted(os.listdir(ROOT))
@@ -2443,11 +2480,10 @@ def smoke_doc_structure():
     assert not _swallowed, (
         f"这些文件随 skill 分发，却被 .gitignore 覆盖 ⇒ **不会进仓库**（CI / 新克隆里缺失）："
         f"{_swallowed}\n"
-        "  真事故：`agent*.json` 吞掉了 `references/agent-contract.json`。**收紧 glob，别放宽它。**")
+        "  `.gitignore` 的 glob 过宽会吞掉随 skill 分发的文件。**收紧 glob，别放宽它。**")
     # 两头都要钉 —— **而且每一头都要多钉几种形态**。
-    # 真事故（同一天的第二半）：第一次这里只钉了 `agent_1.json`（合成夹具形态），
-    # 于是把 glob 收窄成 `agent_*.json` 之后，**真机形态 `agent<字母>_<账号名>.json`
-    # 不再被忽略，而断言照样全绿** —— "含聊天原文的产物别入库"的兜底**静默失效**。
+    # 只钉一种形态的断言，在 glob 被收窄之后会**照样全绿**：真机形态
+    # `agent<字母>_<账号名>.json` 不再被忽略，"含聊天原文的产物别入库"的兜底**静默失效**。
     # 单形态断言 = 单点失效：钉住的永远只是自己恰好想到的那一种写法。
     _must_ignore = ("agentA_account.json", "agentZ_somebody.json",   # 真机形态：agent<字母>_<账号>
                     "agent_1.json", "agent1.json")                    # 按批形态：夹具 / 文档里的写法
@@ -2458,8 +2494,7 @@ def smoke_doc_structure():
         assert not _allowed_by_gitignore(_n), \
             f"派生误报：{_n!r} 被当成可忽略产物（这正是上面那次 CI 全红的成因）"
     # 「什么算运行产物」还有**第二处**名单（模块级的 `REPO_NEVER_ARTIFACTS`）——
-    # 两处都得钉。真事故：`.gitignore` 与那份名单**各写了一份** `agent*.json`，
-    # 结果两处都吞掉了 `references/agent-contract.json`。
+    # 两处都得钉：`.gitignore` 与那份名单各写一份同样的 glob 时，两处会一起吞掉契约文件。
     _hit_never = ["%s（命中「%s」）" % (p, pat) for p in _ship
                   for pat, _why in REPO_NEVER_ARTIFACTS
                   if fnmatch.fnmatch(os.path.basename(p), pat)]
@@ -2513,15 +2548,16 @@ def smoke_doc_structure():
 
 
 def smoke_doc_claims():
-    """文档里"声称的事实"必须与仓库现状一致：术语声明在位 / 作废说法不当现行 / 关键计数一致。
+    """文档里"声称的事实"必须与仓库现状一致：术语声明在位 / 作废说法不当现行 /
+    正文不写编年（版本号与施工日期只许留在 CHANGELOG）/ 关键计数一致。
 
     计数类最值得守：同一个数字写在两三处，改一处漏一处**不会有任何报错**，
     本项目已经因此漏过两次（自检项数、夹具条数）—— 所以把它变成断言，而不是靠人记得。
 
-    ⚠ **写这类断言的规矩**：只守**数字与关系**，不守整句措辞。锚死整句（当年锚的是
+    ⚠ **写这类断言的规矩**：只守**数字与关系**，不守整句措辞。锚死整句（如
     `夹具在 xxx.json（**N 条**）`）会让文档换个说法就误报，等于把维护成本转嫁给写文档的人。
     判据应当是"这个数字与它描述的对象出现在同一行附近"，而不是"你必须这么写"。
-    2026-09-18 已按此放宽夹具条数、open 条数、CI 格数三处。
+    夹具条数、open 条数、CI 格数三处依此放宽。
     """
     import json as _json
 
@@ -2535,6 +2571,12 @@ def smoke_doc_claims():
     for term in ("kdocs", "WPS 云文档", "金山文档", "local"):
         assert term in brief, f"「术语等价」段缺了 {term} 的说明"
 
+    # ---- ①′ 「文档里不许写编年」这条仓库约定必须在 README 里声明 ----
+    # 与 ① 同一逻辑：不变量在文档里**隐形**时，读者会以为"没有这条规矩"，继续往正文里写编年，
+    # 而守卫报错时他还以为守卫坏了。声明在位，§⑥ 的判据才有出处。
+    assert "文档里不许写编年" in readme, \
+        "README 里缺少「文档里不许写编年」这条声明 —— §⑥ 的判据会成无源之规"
+
     # ---- ② 已作废的说法不许作为现行说法出现（按行判，留痕豁免）----
     STALE = ("云文档不做表内复用", "云文档通道不做表内岗位复用", "快照不含数据区",
              "云文档拿不到", "一律手写 `--history`", "需求或优化")
@@ -2544,7 +2586,7 @@ def smoke_doc_claims():
     def _stale_hit(line):
         """这一行是否把已作废的说法**当成现行说法**在讲。
 
-        豁免词必须**贴近**被引述的旧说法。早先的判据是"同一行里出现豁免词即可"，对抗性尝试
+        豁免词必须**贴近**被引述的旧说法。判据若放宽成"同一行里出现豁免词即可"，对抗性尝试
         一测就穿：行尾随便写个"不存在"就能把作废结论重新放回来。
         现在改成 ±60 字符窗口 —— 本仓现有 5 处留痕全都在窗口内（真机核实过）。
         """
@@ -2569,10 +2611,9 @@ def smoke_doc_claims():
                          encoding="utf-8"))
     n_cases = len(fx["cases"])
     n_open = sum(1 for c in fx["cases"] if c.get("open"))
-    # 断言只守**数字与关系**，不守整句措辞。这里早先锚的是
-    # `夹具在 references/rules-fixtures.json（**N 条**）` 这种整句 —— 文档换个说法就误报，
-    # 等于把维护成本转嫁给写文档的人（2026-09-18 审查 D2）。现在只要求
-    # "数字与它描述的对象出现在同一行附近"。
+    # 断言只守**数字与关系**，不守整句措辞。锚整句（`夹具在 references/rules-fixtures.json
+    # （**N 条**）` 这种）时文档换个说法就误报，等于把维护成本转嫁给写文档的人。
+    # 所以只要求"数字与它描述的对象出现在同一行附近"。
     m = re.search(r"rules-fixtures\.json[^\n]{0,40}?(\d+)\s*条", skill)
     assert m, ("SKILL.md 里找不到「rules-fixtures.json … N 条」：写夹具条数时，"
                "让数字与那个文件名出现在同一行即可")
@@ -2586,10 +2627,10 @@ def smoke_doc_claims():
                encoding="utf-8").read()
     mat = yml.split("matrix:")[1].split("steps:")[0]
     lst = re.findall(r"^\s+([A-Za-z\-]+):\s*\[([^\]]*)\]", mat, re.M)
-    # 判据只要求"解析得出格数"，**刻意不锚定轴数**。早先写的是 `if len(lst) != 3`，
-    # 删掉 os 轴（8 格 → 4 格）后它会走进 raise Skip —— 而 **Skip 不是 Fail**：
-    # 输出仍是"✓ 全部通过（…，1 项跳过）"，这条守卫就此**静默失效**，
-    # 文档与 yml 的格数再也不会被比对。轴数是正常的工程变量，不该写死在守卫里。
+    # 判据只要求"解析得出格数"，**刻意不锚定轴数**。把轴数写死（`if len(lst) != 3`）时，
+    # 轴数一变就会走进 raise Skip —— 而 **Skip 不是 Fail**：输出仍是"✓ 全部通过（…，1 项跳过）"，
+    # 这条守卫就此**静默失效**，文档与 yml 的格数再也不会被比对。
+    # 轴数是正常的工程变量，不该写死在守卫里。
     if not lst:
         raise Skip("CI matrix 里解析不到内联列表 —— 形状变了，本断言解析不了")
     grid = 1
@@ -2606,7 +2647,7 @@ def smoke_doc_claims():
     # 那种断言会长期假红 —— 而**长期假红的守卫比没有守卫更糟**（会被当成噪音，然后被无视）。
     chg = open(os.path.join(ROOT, "CHANGELOG.md"), encoding="utf-8").read()
     m_chg = re.search(r"^## \[([^\]]+)\]", chg, re.M)
-    assert m_chg, "CHANGELOG 里找不到版本段标题（形如 `## [1.1.0] - YYYY-MM-DD`）"
+    assert m_chg, "CHANGELOG 里找不到版本段标题（形如 `## [x.y.z] - YYYY-MM-DD`）"
     m_rd = re.search(r"当前版本 \[`v?([\d.]+)`\]", readme)
     assert m_rd, "README 里找不到「当前版本 [`vX.Y.Z`]」那句（改了措辞要同步本断言）"
     assert m_rd.group(1) == m_chg.group(1), (
@@ -2635,6 +2676,158 @@ def smoke_doc_claims():
                 f"{rel}:{n} 把已打 tag 的版本写死在正文里（发布那一刻必然与事实脱节；"
                 f"引述旧写法请让「原写 / 改为」这类词靠近它）：{line.strip()[:80]}")
 
+    # ---- ⑥ 编年只许留在 CHANGELOG：其余文件直接说结论 ----
+    # 口径：非 CHANGELOG 文件里"哪个版本、哪天真发生过什么"是噪音，要写就写
+    # "现在的问题是什么、规则是什么"。
+    #
+    # ⚠ **别把它当"防复发"**：这是**窄判据**，只拦"评审时一眼能看出是施工记录"的几种口吻，
+    #   换个说法（"上一版按 X 写"、"早先版是 Y"）就绕过去了 —— 它**不保证**正文里没有历史。
+    #   已知盲区：
+    #     ① 不含 `CHRON` / `SOFT` 词根的表述（"上一版 / 旧一版"）。
+    #     ② 裸写的三段式版本号（`1.2.0`）：**不守**。本仓发版号一律带 `v`，而裸写三段号在
+    #        工具链与依赖里正当出现（`python-version: 3.13.12`、`openpyxl==3.1.5`），
+    #        两者划不开，所以 `VER` 只认 `v` 前缀。代价：正文里裸写 `1.2.0` 抓不到。
+    #     ③ `以前` —— 在正文里是合法副词（"停用账户的 mtime 会停在很久以前"），刻意不收。
+    #     ④ 豁免词本身可以被用来**开门**：`原写 / 旧写法 / 曾写` 这类词落进 ±60 窗口就整句放行，
+    #        所以「当年这里按旧写法处理」这种叙述能溜过去。窗口机制判定的是**形态**（像不像
+    #        引述），不是**意图** —— 想堵它就得掏出更窄的判据，目前不值得。（豁免表里
+    #        `留痕 / 退场` 两个词已因"为任意句子开门"删掉，只留现在这几个有实义的。）
+    #
+    # 三条臂，作用域都是**全仓**（`_shipped_files()`），只认 ±60 窗口内的引述豁免：
+    #   ① 施工事件词 `CHRON` —— 几乎不会正当出现，命中即违规；
+    #   ② 施工日期 `DATE` —— **光有日期不算**。宽口径当场就会红一片（扫描面内 76 处含日期的
+    #      行逐条看全是夹具与示例：聊天时间戳、`--since` 示例、越界日期样例），所以只有日期
+    #      **±25 字内**出现施工动词 `DATE_VERB` 才算。回放实测：今天全仓命中 0；本次清洗删掉的
+    #      18 条日期形违规里，日期臂单独抓 13 条（另 1 条由编年臂抓到），漏的 4 条用的是
+    #      `扩容 / 删掉 / 放宽 / 起因` 这类**未收录**的动词 ⇒ `DATE_VERB` 是"抓住最露骨几种"
+    #      的短表，不是完备表；
+    #   ③ 发版号 `VER`（只认 `vX.Y.Z`）—— 另整行放行 README 的"当前版本"指针。
+    #
+    # 词条取舍一律**量过**（回放实测的边际贡献），不拍脑袋：
+    #   · `曾经` 入选：全仓新增命中 0，却多抓 2 条真违规；"与 §② 的 `EXEMPT` 字面冲突"从不是
+    #     理由 —— §② 那行同时含 `作废` / `早期版本`，本就落在 ±60 窗口内被豁免。
+    #   · `当时` **单独收紧**（`SOFT`）：它高产，但业务句里正当出现（"以对方当时的表述为准"、
+    #     "签约当时谈的是…"）⇒ 只有 ±25 字内有测试物件词 `SOFT_NEED` 才算编年。
+    #     实测：真违规留 6/7（丢的那条在依据层，本就该留）、业务句 4/4 放行。
+    #   · `那天` / `历史上` **退表**：`那天` 边际贡献 0（它抓的那条被 `真发生过` 覆盖）；
+    #     `历史上` 是本项目的**业务语义**（"提出人取最早提出者"），留着会误伤。
+    #   · `本轮` 刻意不收：业务词（"本轮写入的行区间"），列名与日志里正当出现。
+    #   · `真发生过` / `真翻过` / `上一轮` 边际也是 0，但**零误报风险**（无业务读法，且是
+    #     "最露骨口吻"的核心）⇒ 留。
+    #   ⇒ 增删任何一个词之前先量一次；"因为我说不能加，所以不能加"这类循环理由最容易骗过自己。
+    # ⚠ 依据层例外：`references/workflow-notes.md` 的职责就是记"为什么这么定"，引述旧写法
+    #   （"早期版本直接 errors=replace 解成乱码，所以现在标记未解码"）是它的本职；其余文件
+    #   一律写**现在时因果**（"若按 X 写则会 Y"）。同一形态的句子在依据层留、在别处删，是
+    #   **文件分工**使然，不是随机。
+    CHRON = re.compile(r"真事故|真栽过|真发生过|真翻过|上一轮|旧实现|原实现"
+                       r"|原先|此前|早先|一度|当年|曾经")
+    SOFT = re.compile(r"当时")                    # 只在测试物件词旁才算编年，见上
+    SOFT_NEED = ("夹具", "断言", "自检", "名单", "探针", "全绿", "映射")
+    DATE = re.compile(r"\b20\d\d-\d\d-\d\d\b")    # 日期本身是数据，旁边的施工动词才是线索
+    DATE_VERB = ("实测", "真机", "复现", "审查", "修正", "发布", "事故")
+    VER = re.compile(r"v\d+\.\d+\.\d+")           # 只认发版号；裸写三段号见盲区②
+    CHRON_EXEMPT = QUOTED + ("作废", "早期版本")
+
+    def _near(line, m, keys, window=60):
+        lo, hi = max(0, m.start() - window), min(len(line), m.end() + window)
+        return any(k in line[lo:hi] for k in keys)
+
+    def _chron_hits_in(line):
+        """这一行是否写了"施工编年"。三臂合并，扫描与自检共用同一实现。"""
+        hits = [m.group(0) for m in CHRON.finditer(line)
+                if not _near(line, m, CHRON_EXEMPT)]
+        hits += [m.group(0) for m in SOFT.finditer(line)
+                 if _near(line, m, SOFT_NEED, window=25) and not _near(line, m, CHRON_EXEMPT)]
+        hits += [m.group(0) for m in DATE.finditer(line)
+                 if _near(line, m, DATE_VERB, window=25) and not _near(line, m, CHRON_EXEMPT)]
+        return hits
+
+    def _ver_hits_in(line):
+        if "当前版本" in line:                 # README 的发版指针，整行放行
+            return []
+        return [m.group(0) for m in VER.finditer(line)
+                if not _near(line, m, CHRON_EXEMPT)]
+
+    # 本节（判据机器 + 正反自检）必须豁免自己：词表、"事件词"这类说明与下面的自检串，
+    # 都**必然**含有被禁的词（它们就是判据的数据）。豁免范围**从本节注释起、到函数结束**，
+    # 并按源码里那行注释**动态定位**，而不是写死行号（行号会随编辑漂移，写死等于定时炸弹）。
+    # 刻意**不**豁免整个函数：§①–⑤ 的散文同样该被扫 —— 整函数豁免才是"守个寂寞"的主因。
+    import inspect
+    _src, _start = inspect.getsourcelines(smoke_doc_claims)
+    _anchor = next((i for i, l in enumerate(_src) if l.lstrip().startswith("# ---- ⑥")), None)
+    assert _anchor is not None, (
+        "找不到 §⑥ 的锚点注释 —— 它被改名/搬走后自豁免会**静默失效**（或整段失守）。"
+        "改锚点请连同这里一起改。")
+    # 「豁免到函数尾」隐含一个前提：§⑥ 之后**只剩自检块**（那些自检串本身就是判据的数据，
+    # 必须一并豁免）。往 §⑥ 之后追加的任何小节都会**静默免检**（谁也不报错，等于没加），
+    # 所以把它钉住：新节要么放到 §⑥ 之前，要么在这里显式登记。
+    _later = [l.strip()[:40] for l in _src[_anchor + 1:] if l.lstrip().startswith("# ---- ")]
+    assert all(x.startswith("# ---- 扫描器自检") for x in _later), (
+        "§⑥ 之后出现了未登记的小节 —— 自豁免按「§⑥ 起 → 函数尾」划定，新节会被静默免检。"
+        "请把新节放到 §⑥ 之前，或在此显式登记：" + "、".join(_later))
+    _self_lo = _start + _anchor
+    _self_hi = _start + len(_src) - 1
+    _self_rel = os.path.relpath(os.path.abspath(__file__), ROOT).replace(os.sep, "/")
+
+    _files = _shipped_files()
+    if _files is None:
+        raise Skip("没有可用的 git（或当前目录不是 git 仓库）—— 本节要靠 `git ls-files` "
+                   "定出「随 skill 分发」的文件集，取不到就不假装扫过")
+    # 守守卫自身：名单缺了必然存在的文件时，"没命中"就是**假绿**。刻意不用 `>= N` 这种阈值 ——
+    # 阈值容忍"丢掉一部分"，而这里要么全对、要么说明取数机制已经坏了。
+    for _must in ("SKILL.md", "README.md", "scripts/smoke_test.py"):
+        assert _must in _files, \
+            f"_shipped_files() 的名单里没有 {_must}（共 {len(_files)} 个）—— 取数机制坏了"
+
+    _unreadable = []
+
+    def _lines_or_fail(rel):
+        """读不出就**记账**，不静默跳过 —— 静默跳过会把「读不到」伪装成「没问题」。"""
+        try:
+            return _doc_lines(rel)
+        except (UnicodeDecodeError, OSError) as e:
+            _msg = f"{rel}（{type(e).__name__}）"
+            if _msg not in _unreadable:        # 两个循环各调一次，去重免得报两遍
+                _unreadable.append(_msg)
+            return None
+
+    chron_hits = []
+    for rel in _files:
+        lines = _lines_or_fail(rel)
+        if lines is None:
+            continue
+        for n, line in enumerate(lines, 1):
+            if rel == _self_rel and _self_lo <= n <= _self_hi:
+                continue
+            if _chron_hits_in(line):
+                chron_hits.append(
+                    f"{rel}:{n} 施工叙述该留在 CHANGELOG，正文直接说结论即可：{line.strip()[:80]}")
+    assert not chron_hits, chron_hits
+
+    # 作用域 = 与 ① 同一个 `_files`（全仓），**不再手写一份文件名单** —— 名单会漂移，
+    # 而违规最可能长在"你以为不用扫"的地方（`scripts/` 下的散文注释就是）。
+    # 放行全交给判据本身（"当前版本"整行 + ±60 引述窗口）。
+    ver_hits = []
+    for rel in _files:
+        lines = _lines_or_fail(rel)
+        if lines is None:
+            continue
+        for n, line in enumerate(lines, 1):
+            if rel == _self_rel and _self_lo <= n <= _self_hi:
+                continue
+            if _ver_hits_in(line):
+                ver_hits.append(
+                    f"{rel}:{n} 版本号该留在 CHANGELOG（正文只描述规则，不记版本）：{line.strip()[:80]}")
+    assert not ver_hits, ver_hits
+
+    # 读不出的文件**必须报出来**：上面两个循环对它们 `continue` 了，若默默放过，
+    # "读不到"就变成"没命中" ⇒ 假绿。注意 `_BIN_EXT` 只是**便宜的预筛**、并不完备：
+    # 仓库里若出现被跟踪的 `.webp` / `.ttf` / `.mp4` 之类，它会进名单并在这里报出来。
+    # 报出来的**病因未知**（二进制？编码？权限？），所以文案只陈述现象、不臆断原因。
+    assert not _unreadable, (
+        "下列**被跟踪**的文件读不出文本内容（可能是二进制但扩展名不在 `_BIN_EXT` 里，"
+        "也可能是编码 / 权限）—— 「没命中」不等于「没问题」：" + "、".join(_unreadable))
+
     # ---- 扫描器自检：留痕豁免两头都要钉 ----
     assert _stale_hit("云文档不做表内复用，一律走快照。"), "漏报：现行旧说法没被判为违规"
     assert not _stale_hit("> 早期版本写的是「云文档不做表内复用」，那个结论已作废。"), \
@@ -2649,7 +2842,45 @@ def smoke_doc_claims():
         "误报：引述旧写法被当成了现行依赖"
     assert _tag_hit("已打 tag 的是 v1.0.0。" + "（补记若干说明）" * 8 + "以上请以实际为准。"), \
         "漏报：豁免词离得老远仍然生效"
-    assert n_cases >= 10, f"夹具太少（{n_cases}），这几条计数断言失去意义"
+    assert _chron_hits_in("两种错法都在发布当天真发生过："), \
+        "漏报：施工事件词（真发生过 / 真事故 一类）没被抓到"
+    assert _chron_hits_in("原先这里是严格 strptime，后来换成宽松解析。"), \
+        "漏报：已入表的编年词（原先 / 此前 / 早先 一类）没被抓到"
+    assert _chron_hits_in("当时那份夹具没覆盖到，才漏了这条。"), \
+        "漏报：`当时` 挨着测试物件词（夹具）时没被当成编年"
+    assert not _chron_hits_in("以对方当时的表述为准。"), \
+        "误报：`当时` 在业务句里（±25 字内无测试物件词）被当成了编年"
+    assert not _chron_hits_in("签约当时谈的就是这个口径。"), \
+        "误报：同上 —— 业务语义的 `当时` 不该拦（`口径` 刻意不在 SOFT_NEED 里）"
+    assert not _chron_hits_in("发布那天临时补了一条，后来删了。"), \
+        "误报：`那天` 已退表（边际贡献 0，且它抓的那条被 `真发生过` 覆盖）"
+    assert not _chron_hits_in("历史上最早提出者以提出时间为准。"), \
+        "误报：`历史上` 在本项目是业务语义（最早提出者），已退表"
+    assert _chron_hits_in("这个 glob 是 2026-09-19 发布时扩的，别删。"), \
+        "漏报：日期旁有施工动词（发布）没被抓到"
+    assert not _chron_hits_in("--since 2026-08-01 只取这之后的会话。"), \
+        "误报：普通日期参数（旁无施工动词）被当成了编年"
+    assert _chron_hits_in("曾经两处各写一套宽松正则，口径不一。"), \
+        "漏报：编年副词「曾经」没被抓到"
+    assert not _chron_hits_in("> 早期版本写的是「旧实现按 XX 走」，那个结论已作废。"), \
+        "误报：引述旧写法（带作废标记）被当成了现行叙述"
+    assert not _chron_hits_in("本轮写入的行区间以水位为准。"), \
+        "误报：「本轮」是业务词（指当前这趟写入），不该当编年拦下"
+    assert not _chron_hits_in("停用账户的 mtime 会停在很久以前。"), \
+        "误报：「以前」在正文里是合法副词 —— 它刻意不在表里（见本节盲区③）"
+    assert _ver_hits_in("这个 glob 是 v1.3.0 加的，别删。"), \
+        "漏报：非 CHANGELOG 正文里的版本号没被抓到"
+    assert not _ver_hits_in("python-version: 3.13.12"), \
+        "误报：工具链钉到补丁级的版本号被当成了发版号（本仓发版号一律带 v）"
+    assert not _ver_hits_in('        "openpyxl==3.1.5",'), \
+        "误报：依赖钉到补丁级的版本号被当成了发版号"
+    assert not _ver_hits_in("当前版本 [`v1.2.0`](https://x/releases/tag/v1.2.0)"), \
+        "误报：README 的「当前版本」指针被当成了编年"
+    assert not _ver_hits_in("CHANGELOG 头部原写「已打 tag 的是 v1.0.0」，发布同一分钟就错了"), \
+        "误报：引述旧写法的版本号被当成了现行依赖"
+    # 这条守的是 `references/rules-fixtures.json` 的**规则夹具**条数下限（§③ 那两条计数断言
+    # 靠它才有意义），与上面这些字符串自检**无关** —— 别读成"自检条数足够多"。
+    assert n_cases >= 10, f"规则夹具太少（{n_cases}），§③ 的计数断言失去意义"
 
 
 def main():
@@ -2705,8 +2936,8 @@ def main():
     check("四类引用都指向真实目标（改章节名后漏同步会被抓住）", smoke_doc_refs)
     print("== 文档结构（层级 / 同父重名 / 编号连续 / 清单 vs 磁盘）==")
     check("结构与清单都在磁盘上兑现（新增文件必须同步文档）", smoke_doc_structure)
-    print("== 文档声明 vs 事实（术语 / 作废说法 / 关键计数）==")
-    check("术语声明在位、计数与夹具/CI 实际数一致", smoke_doc_claims)
+    print("== 文档声明 vs 事实（术语 / 作废说法 / 不写编年 / 关键计数）==")
+    check("术语与「不写编年」声明在位、计数与夹具/CI 实际数一致", smoke_doc_claims)
     print("== 离线端到端（preview CSV → final → payload → kdocs rangeData）==")
     check("列映射/起始行/岗位复用/日期序列号/分批", smoke_offline_e2e)
     print("== 仓库卫生 ==")

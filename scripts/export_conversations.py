@@ -31,7 +31,7 @@ TZ = timezone(timedelta(hours=8))
 SHARDS = ["message_2.db", "message_1.db", "message_3.db"]   # m2 最老 → m3 最新
 
 # ---------------- 消息正文解码 ----------------
-# 真机实测（微信 4.1 / 2026-09）：同一张 Msg_* 表里，WCDB_CT_message_content 决定
+# 真机实测（微信 4.1）：同一张 Msg_* 表里，WCDB_CT_message_content 决定
 # message_content 的存储形态：
 #   0 → str，明文
 #   4 → bytes，**ZSTD 压缩帧**（魔数 28 B5 2F FD）。图片/引用/合并转发/通话等富媒体都是这种，
@@ -117,7 +117,7 @@ def appmsg_summary(xml):
         parts.append(des)
     if not parts:
         # 兜底：既无 title/des、也不是引用回复的 appmsg，正文可能在**外层的** <content>，
-        # 或者只有 <url>。以前这些一律只剩 `[链接/文件]`，纯文本型 appmsg 的需求会整条丢掉。
+        # 或者只有 <url>。不取外层字段的话，这些一律只剩 `[链接/文件]`，纯文本型 appmsg 的需求会整条丢掉。
         # 先把 refermsg 摘掉（上面已处理过），避免把引用正文重复算一次；
         # 只取有语义的字段，不做"去标签取全文"——那会把 appid/fromusername 之类 ID 混进来。
         outer = re.sub(r"<refermsg>.*?</refermsg>", "", xml or "", flags=re.S)
@@ -290,8 +290,8 @@ def main():
             pick.append((g, disp2.get(g, g)))
     pick = list(dict.fromkeys(pick))
     if not pick:
-        # 零导出必须**非零退出**：此前只是 print 后 return（退出码 0），而 pipeline 靠退出码
-        # 判成败 —— 于是"一条都没匹配到"被当成成功，整条链继续跑完、最后产出一批空矩阵。
+        # 零导出必须**非零退出**：print 后 return（退出码 0）会让 pipeline 把
+        # "一条都没匹配到"当成成功 —— 整条链继续跑完、最后产出一批空矩阵。
         # 零匹配几乎总是筛选条件写错（时间范围 / 处理人 / 关键字），值得直接停下。
         sys.exit(
             "✗ 没有匹配到任何会话，已中止（零导出会让整条链带着空数据往下走）。\n"
