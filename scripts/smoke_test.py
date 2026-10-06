@@ -2570,8 +2570,12 @@ def smoke_doc_structure():
         # PYTHONDONTWRITEBYTECODE）会误报"README 漏列 __pycache__"。
         # 本地之所以不报：托管 Python 环境设了 PYTHONDONTWRITEBYTECODE=1，
         # 根本不生成它 —— 这正是**本地过、CI 挂**的环境差异。
+        # 被 .gitignore 覆盖的目录（如 scripts/tools/ 下的第三方工具）不算"磁盘结构"，
+        # 否则 clone 进来的工具会误报"README 漏列"。与根目录 unlisted_root 同逻辑豁免。
         real = sorted(f for f in os.listdir(os.path.join(ROOT, sub))
-                      if not f.startswith(".") and f != "__pycache__")
+                      if not f.startswith(".")
+                      and f != "__pycache__"
+                      and not _allowed_by_gitignore(f"{sub}/{f}", match_dir=True))
         miss = [f for f in real if f not in listed]
         assert not miss, f"README 目录树漏列 {sub}/：{miss}"
 
@@ -2586,7 +2590,14 @@ def smoke_doc_structure():
     # ---- ⑤ 新增的 .md 必须纳入守卫（否则"新加的文档"等于没人管）----
     real_md = set()
     for r, dirs, fs in os.walk(ROOT):
-        dirs[:] = [d for d in dirs if d not in (".git", "__pycache__")]
+        # 跳过被 .gitignore 覆盖的目录（如 scripts/tools/），否则第三方工具内部的
+        # 文件（README.md 等）会被当成"未被文档守卫覆盖的 .md"误报。用相对仓库根的
+        # 正斜杠路径匹配——fnmatch 对反斜杠 / 路径前缀都不敏感，必须传 POSIX 相对路径。
+        dirs[:] = [d for d in dirs
+                   if d not in (".git", "__pycache__")
+                   and not _allowed_by_gitignore(
+                       os.path.relpath(os.path.join(r, d), ROOT).replace(os.sep, "/"),
+                       match_dir=True)]
         for f in fs:
             if f.endswith(".md"):
                 real_md.add(os.path.relpath(os.path.join(r, f), ROOT).replace(os.sep, "/"))

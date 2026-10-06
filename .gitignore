@@ -59,3 +59,7 @@ validation_report.txt
 .DS_Store
 Thumbs.db
 *.log
+
+# 第三方解密工具 wcdb-key-tool（灰色工具，不在本仓库内；按 README 手动 clone 到 scripts/tools/ 下）
+# ⚠️ 它自带 .git，是嵌套仓库；忽略到 tools/ 这一级，才能被 skill-release 本地彩排排除出副本。
+scripts/tools/
