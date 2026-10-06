@@ -1,9 +1,9 @@
-# WPS 云文档通道（读表 / 回填 / 接口约束）
+# WPS 云文档通道（读表 / 回填 / 接口约束） （随 skill 发布｜禁写本机路径、账号、uid、用户数据、运行期结果）
 
 `config.excel.source = kdocs` 时的**详情层**：读表分两趟取数、回填请求体怎么造、以及写错就失败的接口约束。
 两条通道共用同一套列映射、判定规则与 payload 格式，只有「读表 / 回填」两端的 I/O 不同 ——
 **规则与流程见 `SKILL.md`「表格来源：两条通道」**，本文只写这一端的做法与实测依据
-（机制与逐条实测另见 `references/workflow-notes.md`）。
+（机制与逐条实测另见 `references/workflow-notes.md`「分册索引」）。
 
 > 云文档之所以要**经过「快照」**：连接器的 `sheet.*` 都是**只有 agent 能调的 MCP 工具，Python 脚本调不到**。
 > 所以读表由 agent 取数落盘、脚本再读快照；写表由脚本产出请求体、agent 去调工具。
@@ -29,7 +29,7 @@ python scripts/probe.py workbook --snapshot <output.dir>/sheet_snapshot.json --j
 # 3) 第 2 趟：按列映射只读关键列（需求描述/提出时间/提出人/提出人岗位/解决人…）→ raw_cols.json → 再 build
 #    ⚠ rowTo 必须**读到表末**（不要只读前几行）：岗位复用要靠这一趟把 提出人+提出人岗位 读进来。
 #      读全后回包很大，但**不必担心撑爆上下文** —— 宿主会把它自动**落盘**成文件，
-#      直接拿那个落盘文件当 --raw 即可（实测依据见 references/workflow-notes.md「岗位复用」）。
+#      直接拿那个落盘文件当 --raw 即可（实测依据见 references/reuse-judgement-notes.md「岗位复用」）。
 python scripts/sheet_snapshot.py build --raw raw_hdr.json --raw raw_cols.json --out <output.dir>/sheet_snapshot.json
 python scripts/sheet_snapshot.py inspect --snapshot <output.dir>/sheet_snapshot.json   # 核对末行/追加行
 ```

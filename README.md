@@ -7,7 +7,7 @@
 
 不绑定任何具体客户、项目或人员——服务对象、项目、会话、处理人全部由使用者通过 `config.json` 配置。
 
-当前版本 [`v1.2.1`](https://github.com/yfwang0731/skill-wechat-worklog-matrix/releases/tag/v1.2.1)　·　变更历史见 [`CHANGELOG.md`](CHANGELOG.md)
+当前版本 [`v1.2.2`](https://github.com/yfwang0731/skill-wechat-worklog-matrix/releases/tag/v1.2.2)　·　变更历史见 [`CHANGELOG.md`](CHANGELOG.md)
 
 [![selftest](https://github.com/yfwang0731/skill-wechat-worklog-matrix/actions/workflows/selftest.yml/badge.svg)](https://github.com/yfwang0731/skill-wechat-worklog-matrix/actions/workflows/selftest.yml)
 
@@ -95,16 +95,20 @@ wechat-worklog-matrix/
 │   ├── position_reuse.py
 │   ├── rules_check.py
 │   ├── common.py
-│   └── smoke_test.py
+│   ├── smoke_test.py
+│   ├── privacy_scan.py
+│   └── privacy_patterns.example.json
 └── references/
     ├── agent-contract.json
     ├── agent-prompt-zh.txt
     ├── kdocs-channel.md
+    ├── reuse-judgement-notes.md
     ├── rules-fixtures.json
+    ├── wechat-db-notes.md
     └── workflow-notes.md
 ```
 
-各脚本干什么见「脚本清单」（`SKILL.md`）；`references/workflow-notes.md` 是机制说明与实测依据层。
+各脚本干什么见「脚本清单」（`SKILL.md`）；机制说明与实测依据层见 `references/workflow-notes.md`「分册索引」。
 
 ### 自检
 
@@ -122,9 +126,14 @@ python scripts/smoke_test.py --full # 再加 3 项（openpyxl / zstandard）
 其中一条只守**仓库本身**的约定：**文档里不许写编年** —— 版本号与「哪个版本出过什么事」只留在
 [`CHANGELOG.md`](CHANGELOG.md)，其余文件直接说结论。
 
+- **发布前隐私扫描**（独立工具，不进上面这套自检体系）：`python scripts/privacy_scan.py --patterns <仓外清单>`
+  —— **先把真实业务标识填进仓外清单**（空清单 fail-closed：清单缺失或为空即报错退出，不给假绿）；
+  清单内**已知**业务标识必须 0 命中。它是**补充、不是保证**：只覆盖清单里**已有**的标识，
+  清单外的**新**客户 / 新项目名它看不见。
+
 > CI 的格怎么切、那条约定守什么、有哪些已知盲区 → 见
-> [`references/workflow-notes.md`](references/workflow-notes.md) 与 `scripts/smoke_test.py` 的
-> `smoke_doc_claims` 注释（判据细节只在那里写一份）。
+> `references/workflow-notes.md`「分册索引」与 `references/workflow-notes.md`「自检与 CI」，
+> 以及 `scripts/smoke_test.py` 的 `smoke_doc_claims` 注释（判据细节只在那里写一份）。
 
 ## 许可与合规
 

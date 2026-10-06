@@ -394,7 +394,7 @@ python scripts/rules_check.py verify --config config.json --results <工作目�
 ## 微信库结构（领域事实）
 
 > 只列**会改变你怎么做**的部分。完整机制（消息表分片与 `Name2Id`、`local_type` 码表、
-> `WCDB_CT_message_content` 取值、导出侧的三形态处理表）见 `references/workflow-notes.md`
+> `WCDB_CT_message_content` 取值、导出侧的三形态处理表）见 `references/wechat-db-notes.md`
 > 「环境事实」与「消息正文解码」——那里是唯一权威，本节不复制。
 
 1. **库位置**：`~/Documents/xwechat_files/<账户目录>/db_storage/`，SQLCipher 加密。
@@ -426,6 +426,7 @@ python scripts/rules_check.py verify --config config.json --results <工作目�
 | `build_matrix_rows.py` | `preview`（**先校验子代理产出契约**，不合格即报错；再标跨会话重复）/ `final`（按列映射生成 payload，**内含岗位复用**） |
 | `position_reuse.py` | 岗位列向上复用**独立补跑**（与 `final` 共用 `common.reuse_position_fill`；历史只读、只动新增行） |
 | `rules_check.py` | 判定规则**行为验证**：`plan`（渲染提示词 + 生成盲评 case）/ `verify`（比对标注，三类差异） |
+| `privacy_scan.py` | 隐私扫描（**独立工具**，不进本仓自检体系）：扫 `git ls-files` 文本文件，只报**仓外清单**里的业务标识；清单缺失即报错退出 |
 | `common.py` | 配置加载、路径识别、日期/列工具、云文档快照抽象层（`GridWorkbook`/`GridSheet`/`sparse_to_grid`）、控制台编码、输入路径守卫 |
 | `pipeline.py` | `probe`（探测确认）/ `run`（执行） |
 

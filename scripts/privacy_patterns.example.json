@@ -1,0 +1,6 @@
+{
+  "_comment": "隐私扫描的**示例清单**（占位符，随 skill 发布）。真实清单请放**仓外**，例如 ~/.workbuddy/wechat-worklog-matrix/privacy_patterns.json，用 --patterns 或环境变量 PRIVACY_PATTERNS 指过去；清单不含真实业务标识，本地 CI 无清单时会报错退出而不是给「0 命中」。",
+  "_format": "字符串数组，或 {\"patterns\": [...]}。每项是**业务标识原文**（客户名 / 项目编号 / 姓名拼音…），按子串匹配；只覆盖清单里已知的标识，清单外的新名字不覆盖。",
+  "_examples": "示范写法（**文档说明，切勿放进 patterns**）：[\"某客户名\", \"某项目编号\", \"某姓名拼音\"]。patterns 保持为空，填入真实业务标识后才可用于发布前置检查。",
+  "patterns": []
+}

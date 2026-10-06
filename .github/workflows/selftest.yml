@@ -50,6 +50,14 @@ jobs:
         if: matrix.deps == 'minimal'
         run: python scripts/smoke_test.py
 
+      # privacy_scan.py 是**独立工具**（不进 smoke_test 的 MODULES / 守卫体系），因此它的
+      # `--selftest` 默认没有任何自动化跑到 —— 改坏语法或断言，CI 会全绿。这里单独补一格。
+      # 放 `deps == 'minimal'`：它只用标准库、且自检自带样本**不需要仓外清单**，依赖最少的那档即可，
+      # 不必在 full 档重复跑一遍。
+      - name: Privacy scan (--selftest)
+        if: matrix.deps == 'minimal'
+        run: python -B scripts/privacy_scan.py --selftest
+
       - name: Smoke test (--full)
         if: matrix.deps == 'full'
         run: python scripts/smoke_test.py --full

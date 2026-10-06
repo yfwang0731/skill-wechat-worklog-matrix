@@ -22,6 +22,57 @@
 
 ---
 
+## [1.2.2] - 2026-10-06
+
+> 语义化版本判定：**对外能力不变** —— 这一版动的全是**仓库自身的文档组织与自检 / 隐私工具**：
+> 没有新增 / 删除 / 改名任何子命令或参数，没有改产出格式，没有增删配置字段 ⇒ **patch**。
+
+**一条线：把超长的依据层拆成可维护的三份，并把「记忆文件」的发布声明与发布前的隐私扫描补齐。**
+
+### Added
+
+- **隐私扫描工具** `scripts/privacy_scan.py`（**独立工具，不进本仓自检体系**）：扫描面 = `git ls-files`
+  的文本文件，只报**仓外清单**里登记的业务标识（客户名 / 项目编号 / 姓名拼音…）；形状判据
+  （手机号 / 证件号 / 超长数字串）默认只提示、不阻断。清单**缺失或为空即报错退出**，不给"0 命中"
+  这种假绿；`--selftest` 含正反用例与**注入断言**（植入一条清单内标识必须被报红）。随包另附占位清单
+  `scripts/privacy_patterns.example.json`，真实清单放仓外（如 `~/.workbuddy/wechat-worklog-matrix/`）。
+- **两个记忆分册**：`references/wechat-db-notes.md`（环境事实 / 解密 / 消息正文解码）与
+  `references/reuse-judgement-notes.md`（岗位复用 / 判定规则）—— 依据层拆成"主文件 ＋ 两个分册"，
+  每个记忆文件单独不超过 8 千字符。
+
+### Changed
+
+- **依据层文件拆分**：`references/workflow-notes.md` 保留为**主文件与索引**（列映射 / 两种表格来源 /
+  云文档接口约束 / 云文档纯文本风险 / 自检与 CI / 易错点），其余主题整体搬进两个分册，**正文逐字保留**。
+- **四个记忆 md 的第 1 行并入发布声明**（`references/workflow-notes.md`、`references/wechat-db-notes.md`、
+  `references/reuse-judgement-notes.md`、`references/kdocs-channel.md`），**不新增行**；主文件前 7 行保持不变。
+- **外部引用同步**：`SKILL.md`「微信库结构」详情指针改指 `wechat-db-notes.md`；`references/kdocs-channel.md`
+  的「岗位复用」依据指针改指 `reuse-judgement-notes.md`，首段泛指改为覆盖三个记忆文件；
+  `README.md` 的「开发与仓库」「自检」两处依据指针同步。
+- **自检守卫同步**：`DOC_FILES` / `DOC_NORMATIVE` 登记两个新 md；`smoke_doc_layering` 的比对集合与
+  `>` 豁免扩到依据层三个记忆文件；`smoke_snapshot_coverage` 的「作废说法」扫描集补上两个新文件
+  （不补则它对分册**静默失效**）。
+- **`README.md` 目录结构树**补登两个新脚本与两个新记忆文件；**「自检」节**加一条发布前隐私扫描；
+  **`SKILL.md` 脚本清单**加 `privacy_scan.py`。
+- **两个 json 加发布元数据**：`references/agent-contract.json` 与 `references/rules-fixtures.json` 各加
+  `"_publish": "随包发布"`；`rules-fixtures.json` 另加 `"_size_scope"`（契约 / 夹具类，非记忆文件，
+  不适用单文件 8k 上限）。
+- **守卫加固（本批含）**：本批不只动文档，同时收紧了自检守卫 —— `smoke_doc_layering` 的 `>` 豁免
+  从"整行免检"收窄为"**带引述/作废标记才免检**"（整行免检时，把 `SKILL.md` 的规则原句前面加个 `> `
+  抄进记忆文件就能静默绕过分层守卫）；记忆文件名单抽成模块级**单一来源** `MEM_NOTES`
+  （`DOC_FILES` / `DOC_NORMATIVE` / 分层守卫三处引用它，不再各写一遍）；`smoke_doc_structure` 补
+  两条断言（主文件索引覆盖**全部分册**、每个分册有「本文件负责什么」的责任段）；`privacy_scan.py
+  --selftest` 纳入 CI 自检（该独立工具默认不被任何自动化跑到）。本批另补两处守卫：①
+  `smoke_doc_structure` 新增对主文件「本目录文件与发布属性」表与磁盘 `references/` 的**双向**对账
+  （表多列了 ⇒ 红、表漏列了 ⇒ 红，表不再会静默变旧）；② `smoke_doc_layering` 把 `>` 豁免的对照实验
+  固化为**显式常驻用例**（运行时取真实 `SKILL.md` 行两步合证，不碰仓库文件）。**对外能力不变**，但守卫改动必须
+  一并写进 CHANGELOG —— 否则读到这里会以为这一版只动了文档。豁免词表已用**精确等值断言**钉住
+  （扩宽必须先改断言）。
+
+> 本次改动只动文档组织、注释与自检 / 工具，**不动解密 / 导出 / 回填任何业务逻辑**。
+
+---
+
 ## [1.2.1] - 2026-09-19
 
 > 语义化版本判定：**对外能力不变** —— 这一版动的全是**仓库自身的文档卫生与自检守卫**：
@@ -1181,6 +1232,7 @@
    分发的文件（CI 会响），过窄会放走含聊天原文的产物（**静默，更严重**）。两种都真发生过：
    单形态断言等于单点失效 —— 它钉住的永远只是自己恰好想到的那一种写法。
 
+[1.2.2]: https://github.com/yfwang0731/skill-wechat-worklog-matrix/releases/tag/v1.2.2
 [1.2.1]: https://github.com/yfwang0731/skill-wechat-worklog-matrix/releases/tag/v1.2.1
 [1.2.0]: https://github.com/yfwang0731/skill-wechat-worklog-matrix/releases/tag/v1.2.0
 [1.1.1]: https://github.com/yfwang0731/skill-wechat-worklog-matrix/releases/tag/v1.1.1

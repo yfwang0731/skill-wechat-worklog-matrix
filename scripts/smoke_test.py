@@ -1706,7 +1706,9 @@ def smoke_snapshot_coverage():
         #   刻意按行判、而不是全文子串：允许它作为"曾如此、已作废"的历史说明留痕
         #   （补一个正确的结论而不说明"错在哪"，下一个人还会照旧走老路）。
         stale = ("云文档不做表内复用", "云文档通道不做表内岗位复用", "云文档拿不到")
-        for fname in ("SKILL.md", os.path.join("references", "workflow-notes.md")):
+        # 扫描集要覆盖承载这批"已作废结论"文案的每一份文件：搬进记忆分册后若不随之补上，
+        # 本守卫对新文件**静默失效** —— 那些已作废的结论就可能在分册里以现行说法复活。
+        for fname in ("SKILL.md",) + MEM_NOTES:
             txt = open(os.path.join(ROOT, fname), encoding="utf-8").read()
             for n, line in enumerate(txt.splitlines(), 1):
                 if any(s in line for s in stale) and not any(
@@ -1965,21 +1967,31 @@ def smoke_doc_layering():
     skill_norm = {_norm(l) for l in skill_txt.splitlines() if len(l.strip()) >= 30}
     skill_norm.discard("")          # 全标点行归一后会是空串，别让它匹配上同样归一成空串的行
 
+    # 依据层三个记忆文件（主文件 ＋ 两个分册）来自模块级单一常量 MEM_NOTES。比对集合必须覆盖
+    # 全部三个，漏掉哪个，哪个里的逐字复述就**静默通过**。
+
+    # `>` 行只在**同时含引述/作废标记**时才免检 —— 标记集合与 `smoke_doc_claims` 的留痕豁免同源。
+    # 为什么必须带标记：`>` 的正当用途是"引述旧结论并标明作废"，没有标记的 `>` 就是普通行文 ——
+    # 整行免检时，把 `SKILL.md` 的规则原句前面加个 `> ` 抄进来，分层守卫就看不见（静默放行）。
+    _QUOTE_MARKS = ("作废", "早期版本", "旧结论", "原写", "曾写", "引述")
+
     def _skip_line(rel, s):
         """该行是否免检。
 
-        `>` 引用块的豁免**只给 notes** —— 那里的 `>` 是"引述旧结论并标明作废"的专用语法
-        （`smoke_doc_claims` 的留痕判据依赖它），豁免有依据。README 里的 `>` 只是强调块，
-        给它同样的豁免就等于**留一条现成的绕过通道**：把 SKILL.md 的整句抄进引用块，守卫看不见。
-        标题与表格行两边都豁免：那不是行文，是结构。
+        标题与表格行两边都豁免（那不是行文，是结构）；README **不享受**任何 `>` 豁免
+        （它里面的 `>` 只是强调块，豁免它等于留一条现成的绕过通道）。
+        记忆文件里的 `>` 只有**带引述/作废标记**才免检 —— 无标记的 `>` 照常送去比对，
+        逐字复述 `SKILL.md` 的照样报红。
         """
-        prefixes = ("#", "|", ">") if rel.endswith("workflow-notes.md") else ("#", "|")
-        return len(s) < 30 or s.startswith(prefixes)
+        if len(s) < 30 or s.startswith(("#", "|")):
+            return True
+        if s.startswith(">") and rel in MEM_NOTES:
+            return any(m in s for m in _QUOTE_MARKS)
+        return False
 
     dup = []
-    for rel in ("references/workflow-notes.md", "README.md"):
-        txt = notes_txt if rel.endswith("workflow-notes.md") else \
-            open(os.path.join(ROOT, rel), encoding="utf-8").read()
+    for rel in MEM_NOTES + ("README.md",):
+        txt = open(os.path.join(ROOT, rel), encoding="utf-8").read()
         infence = False
         for n, line in enumerate(txt.splitlines(), 1):
             if line.lstrip().startswith("```"):
@@ -2006,17 +2018,55 @@ def smoke_doc_layering():
     assert _norm("> 这是一条来自 SKILL.md 的规则原句，长度足够触发重复判定") == _norm(_probe_line), \
         "漏报：抄成引用块（保留 `> ` 前缀）时判不出重复 —— 光去掉 `>` 豁免是不够的，前缀也得剥"
     assert _norm("另一句完全不同的话，只是长度也超过了三十个字符而已") not in skill_norm, "误报风险"
-    # `>` 豁免的差异要钉住：README 不再豁免、notes 仍然豁免 —— 两头都断言，
-    # 否则"顺手把 README 也加回豁免"这种改动会静默地把绕过通道放回去
+    # `>` 豁免收窄后的形态要钉住**三头**：README 不豁免、记忆文件"带标记才豁免"、无标记**不**豁免 ——
+    # 否则"顺手把整行豁免加回去/把判据放回 `startswith('>')`"这种改动会静默地把绕过通道放回来
     assert not _skip_line("README.md", ">" + "很长的强调句" * 8), \
-        "README 的 `>` 行又被豁免了 —— 那是把 SKILL.md 抄进引用块就能绕过的通道"
-    assert _skip_line("references/workflow-notes.md", ">" + "很长的留痕句" * 8), \
-        "notes 的 `>` 留痕豁免不该被取消（它的作废留痕全靠这个语法）"
+        "README 的 `>` 行被豁免了 —— 那是把 SKILL.md 抄进引用块就能绕过的通道"
+    assert _skip_line("references/workflow-notes.md", "> 早期版本" + "很长的留痕句" * 8), \
+        "notes 带引述标记的 `>` 留痕豁免不该被取消（作废留痕全靠这个语法）"
+    assert not _skip_line("references/workflow-notes.md", ">" + "很长的留痕句" * 8), \
+        "没有引述标记的 `>` 行不该被豁免 —— 否则把 SKILL.md 的一句抄进引用块就绕过了分层守卫"
     assert _skip_line("README.md", "#" + "很长的标题" * 8), "标题行仍应免检（不是行文）"
+
+    # ---- 把"对照实验"固化为**显式**常驻用例 ----
+    # 上面几条各钉一半：①③ 只钉"归一化是否等价"（且用的是合成句），其余几条只钉"`>` 行是否被跳过"。
+    # 由它们**组合推出**的结论是「同一条规则，无标记地抄成 `>` 引用块会被抓住」，但没有任何一条断言
+    # 直接钉这个结论 —— 任一半被改动（`_norm` 的前缀剥离、`_skip_line` 的实现）都可能让组合结论失效
+    # 而无单条断言报红。这里改用**运行时的真实 SKILL.md 行**把这个结论本身显式断言，两步合证、不碰仓库文件：
+    #   ① 给它加 `> ` 前缀抄过去，归一化后确实命中 skill_norm（会被送去比对的半句）；
+    #   ② 且它不被 `_skip_line` 跳过。①＋② ⇒ 「无标记的 `>` 抄 SKILL.md 会被抓住」。
+    # 为什么不做"真的把行写进分册再整跑一遍"的常驻用例：那会改动仓库文件，违反本仓"自检只把临时产物
+    # 写进系统临时目录、跑完 `git status` 仍干净"的纪律 —— 于是用"真实 SKILL.md 行 ＋ 两步合证"
+    # 作为该对照实验的**最小完备常驻形态**（结论本身被显式断言，而非从两条半边断言里推）。
+    _real = ""
+    for _l in skill_txt.splitlines():
+        _s = _l.strip()
+        if (len(_s) >= 30 and not _s.startswith(("#", "|", ">"))
+                and _norm(_s) and not any(m in _s for m in _QUOTE_MARKS)):
+            _real = _s
+            break
+    assert _real, ("SKILL.md 里取不到一条会进比对的真实行（≥30 字符、非标题/表格/引用、"
+                   "且不含引述标记）—— 取数条件要跟着 SKILL.md 的实际写法调整")
+    assert _norm("> " + _real) in skill_norm, \
+        "漏报：把 SKILL.md 的真实一行加 `> ` 前缀抄进记忆文件，归一化后应命中 skill_norm"
+    assert not _skip_line("references/workflow-notes.md", "> " + _real), \
+        "漏报：无标记的 `>` 真实行被判为免检 —— 分层守卫对这条绕过通道失效"
+    # 反向控制：同一条真实行前面加引述标记 ⇒ 仍豁免（带标记的引述是作废留痕的正当语法，不该被误伤）。
+    assert _skip_line("references/workflow-notes.md", "> 早期版本 " + _real), \
+        "误报：带引述标记的真实行不该被送去比对"
+
+    # 上面几条钉的是"行为"（`>` 行是否被跳过）；被它引用的词表本身没被钉 —— 只把 `_QUOTE_MARKS`
+    # 加一个常用词，"带标记才豁免"就凭空变宽、`>` 通道随之重开，却没有任何断言报红。故用精确等值
+    # 把词表钉死：按元组逐字比对（顺序也按约定固定，不是集合）。
+    assert _QUOTE_MARKS == ("作废", "早期版本", "旧结论", "原写", "曾写", "引述"), (
+        "豁免词表被改动 —— 扩宽它必须先改本断言，并在 CHANGELOG.md 的「守卫加固」条里记明"
+        "（`>` 免检只对带引述/作废标记的行生效；词表一扩，`>` 通道就重开）")
+
     assert not dup, dup
 
 
 # ========================= 文档结构类守卫 =========================
+# 判据与盲区另见 references/workflow-notes.md 的「自检与 CI」一节（与本处互为反向指针，避免两处各写一份）。
 # 起因：三步走（结构分层 → 引用/歧义/冲突 → 全流程）里，这些检查都只是**一次性探针**。
 # 探针跑完就再没人跑，下一个人改文档照样踩同一个坑 —— 而且**真踩了**：结构重排把
 # `workflow-notes.md` 的一节改名，却没同步那句指向它的「见「…」」，悬空引用就这样进了仓库，
@@ -2028,12 +2078,18 @@ def smoke_doc_layering():
 #   · 章节引用只认 `见/详见/参见 + 「…」` 这种**明确的指针句式**，不做全文「」扫描；
 #   · 参数引用按**逐行归属**判（该行的参数必须属于该行那个脚本），而不是"某处存在"；
 #   · 重名校验按**同一父节**判（CHANGELOG 每个版本都有 `### Added`，父节不同就不算重名）。
-DOC_FILES = ("SKILL.md", "README.md", "CHANGELOG.md", "references/workflow-notes.md",
-             "references/kdocs-channel.md", "references/agent-prompt-zh.txt")
+# 记忆层拆为 3 个文件（主文件 ＋ 两个分册）：漏登记其中任何一个，本节的层级/引用/结构检查
+# 就对它**静默跳过**（既不报错也不覆盖）—— 所以新增文档必须同时进 DOC_FILES，否则等于没人管。
+# 依据层三个记忆文件（主文件 ＋ 两个分册）的**单一来源** —— 增删一个分册只改这一处，
+# 不许在同一份名单上各抄一遍（抄成的多份副本必然各自漂移，也没有任何信号提醒）。
+MEM_NOTES = ("references/workflow-notes.md", "references/wechat-db-notes.md",
+             "references/reuse-judgement-notes.md")
+DOC_FILES = ("SKILL.md", "README.md", "CHANGELOG.md") + MEM_NOTES + (
+            "references/kdocs-channel.md", "references/agent-prompt-zh.txt")
 # 规范类文档：**CHANGELOG 刻意不在内** —— 它是历史记录，本来就该引用已作废的说法
 # 与那些不随 skill 分发的审查脚本，拿"现行文档"的判据去要求它只会天天误报。
-DOC_NORMATIVE = ("SKILL.md", "README.md", "references/workflow-notes.md",
-                 "references/kdocs-channel.md")
+# 两个记忆分册与主文件同属"现行文档"，故一并纳入（它们在 DOC_NORMATIVE 之外则作废说法检查不到）。
+DOC_NORMATIVE = ("SKILL.md", "README.md") + MEM_NOTES + ("references/kdocs-channel.md",)
 
 _DOC_SEARCH_DIRS = ("", "scripts", "references", "references/tools", ".github/workflows")
 
@@ -2532,6 +2588,50 @@ def smoke_doc_structure():
     assert not (real_md - guarded), \
         f"这些 .md 没被文档守卫覆盖（新增文档要加进 DOC_FILES）：{sorted(real_md - guarded)}"
     assert not (guarded - real_md), f"DOC_FILES 列了不存在的文档：{sorted(guarded - real_md)}"
+
+    # ---- ⑥ 记忆层的索引与责任段必须在位 ----
+    # 主文件兼「索引 + 主文件」，两个分册各自开头要有一段"本文件负责什么"。这两样只靠人眼落实时，
+    # 删掉索引里的一行、删掉某个分册的责任段，都不会有任何信号 —— 主文件不再索引到那个分册、
+    # 分册失去定位，读者只能逐个点开猜。判据只认"存在这样一行"，不认措辞。
+    _main = "references/workflow-notes.md"
+    _main_txt = open(os.path.join(ROOT, _main), encoding="utf-8").read()
+    for _sub in [m for m in MEM_NOTES if m != _main]:
+        assert any(l.startswith("|") and _sub in l for l in _main_txt.splitlines()), \
+            f"{_main} 的索引里没有 {_sub} 那一行（新增分册要进主文件索引表）"
+        _sub_txt = open(os.path.join(ROOT, _sub), encoding="utf-8").read()
+        assert any(l.startswith(">") and "本文件" in l and "SKILL.md" in l
+                   for l in _sub_txt.splitlines()), \
+            f"{_sub} 缺少「本文件负责什么」的责任段（一行以 `>` 开头、同时含「本文件」与 `SKILL.md`）"
+
+    # ---- ⑦ 主文件「本目录文件与发布属性」表 vs 磁盘 references/（双向）----
+    # 那张表是"references/ 里有哪些文件、各自怎么发布"的**唯一人读清单**。它的对账对象（7 行，
+    # 含 2 个 json ＋ 1 个 txt）不在任何守卫的比对范围内：④ 对的是 README 目录树，⑥ 对的是
+    # MEM_NOTES 三名成员。于是新增一个 references/ 下的文件、或删掉一个，表就**静默变旧**
+    # （读者相信表是全的，实际不是）。判据刻意取**双向**：表里列了磁盘没有的 ⇒ 红；磁盘有而表里
+    # 没列的 ⇒ 红（新增文件要进表）。只守单向（如只查"表里列的都在磁盘上"）时，"新加文件忘了进表"
+    # 这条照样漏 —— 而它正是表变旧的主因。
+    _mk = "**本目录文件与发布属性**"
+    assert _mk in _main_txt, f"{_main} 里找不到「{_mk}」标记（改了措辞要同步本断言）"
+    _blk, _seen = [], False
+    for _l in _main_txt.split(_mk, 1)[1].splitlines():
+        if _l.startswith("|"):
+            _blk.append(_l)
+            _seen = True
+        elif _seen:
+            break
+    assert _blk, f"「{_mk}」标记之后没有紧随的表格块（连续以 `|` 开头的行）"
+    _in_tbl = {os.path.basename(m)
+               for m in re.findall(r"`references/([^`\s]+)`", "\n".join(_blk))}
+    _ref_dir = os.path.join(ROOT, "references")
+    _on_disk = {f for f in os.listdir(_ref_dir)
+                if f != "__pycache__" and not f.startswith(".")
+                and os.path.isfile(os.path.join(_ref_dir, f))}
+    assert not (_in_tbl - _on_disk), (
+        f"「{_mk}」表列了磁盘 references/ 上没有的文件：{sorted(_in_tbl - _on_disk)}"
+        "（表比磁盘多了 —— 删/改了文件后表没同步）")
+    assert not (_on_disk - _in_tbl), (
+        f"磁盘 references/ 下有文件没进「{_mk}」表：{sorted(_on_disk - _in_tbl)}"
+        "（表漏列了 —— 新增文件要进表）")
 
     # ---- 扫描器自检 ----
     _synth = "# T\n\n```\n# not a heading\n```\n\n## A\n\n### B\n\n### B\n\n#### C\n"
