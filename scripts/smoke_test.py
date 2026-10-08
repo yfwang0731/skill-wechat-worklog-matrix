@@ -67,6 +67,8 @@ class Skip(Exception):
 
 def check(name, fn, count=True):
     """跑一项检查。`count=False` 用于"核对项数"这类**不该把自己算进去**的元检查。"""
+    if _ONLY is not None and _CUR["bid"] not in _ONLY:
+        return
     try:
         fn()
         if count:
@@ -83,6 +85,66 @@ def check(name, fn, count=True):
 
 MODULES = ["common", "probe", "decrypt", "export_conversations", "split_for_agents",
            "build_matrix_rows", "position_reuse", "sheet_snapshot", "to_kdocs_payload"]
+
+
+# 自检分块：`--list-blocks` 列、`--only` 选。id 一律 ASCII 小写、不含数字（避开编年判据）。
+# 说明文字直接取自原 `print("== … ==")` 的「== 之间那串字」（**含原有的首尾空格差异**，一字不改）
+# —— 这样 `blk()` 才能让默认档输出逐字节不变（原文件里带全角括号的标题本来就没有结尾空格）。
+BLOCKS = (
+    ("imports", " import 冒烟 "),
+    ("common", " common 单测 "),
+    ("decoding", " 消息正文解码（真机乱码根因）"),
+    ("guards", " 守卫与稳健性（真跑暴露）"),
+    ("writeguard", " 落表前的两道复核（起始行算错会覆盖历史数据）"),
+    ("snapshot", " 云文档快照抽象层 "),
+    ("reuse", " 岗位复用共用层（final 内置 / position_reuse 共用）"),
+    ("build", " build_matrix_rows 单测 "),
+    ("ruleconsistency", " 判定规则一致性（防漂移）"),
+    ("qvalues", " 「需求归类」取值域（提示词 ↔ 代码 ↔ 线上台账）"),
+    ("fixtures", " 判定夹具完备性（行为验证的 CI 侧；真实判定由 rules_check.py 跑）"),
+    ("rulescheck", " rules_check 的正向路径（渲染 / 盲评 case / verify 分类）"),
+    ("doccli", " 文档里的 CLI 形状 vs argparse "),
+    ("clicontract", " CLI 守卫契约（宁可报错也不静默改写）"),
+    ("pathguards", " 输入路径守卫（路径不存在/坏 JSON 一律友好报错）"),
+    ("nosilent", " 不许静默降级（P0 回归）"),
+    ("preview", " preview / final / --new-rows 的列契约 "),
+    ("agentcontract", " 子代理产出契约（坏值不许顺到 final）"),
+    ("snapshotcov", " 云文档通道表内复用 + 快照覆盖范围 "),
+    ("frontmatter", " SKILL.md frontmatter 长度额度（平台上限 1024）"),
+    ("doclayering", " 文档分层（SKILL.md 写规则 / workflow-notes·README 不得逐字复述）"),
+    ("docrefs", " 文档引用可解析（文件 / 链接 / 章节指针 / 参数速查表归属）"),
+    ("docstructure", " 文档结构（层级 / 同父重名 / 编号连续 / 清单 vs 磁盘）"),
+    ("docclaims", " 文档声明 vs 事实（术语 / 作废说法 / 不写编年 / 关键计数）"),
+    ("e2e", " 离线端到端（preview CSV → final → payload → kdocs rangeData）"),
+    ("hygiene", " 仓库卫生 "),
+    ("cp1252", " 非 UTF-8 控制台（cp1252，Windows runner 的真实条件）"),
+    ("deps", " 依赖缺失时的提示 "),
+    ("positionreuse", " position_reuse "),
+    ("meta", " 自检项数 vs 文档 "),
+)
+
+_BLOCK_LABELS = dict(BLOCKS)
+_ONLY = None            # None = 全量；set() = 只跑这些块
+_ONLY_ORDER = []        # 选中的块名（保持给定顺序、去重），供横幅与末行显示
+_CUR = {"bid": None}
+
+
+def blk(bid, label):
+    """开始一个块：登记当前块 + 打标题（标题就是 `==` 之间的 label，**不带 id**，默认档输出逐字节不变）。
+
+    用 `"==%s==" % label`（**不是** `"== %s =="`）：原文件里 30 处标题的结尾空格本就不统一
+    （带全角括号的没有结尾空格），label 里已把这段空格原样带上，拼回去才逐字节一致。
+
+    `--only` 收窄时，**未选中的块整块静默**（标题也不打）：这样"只跑选中的块"在
+    串行档与并行档（子进程只跑一个块、父进程按顺序合并 stdout）下天然一致。
+    """
+    assert bid in _BLOCK_LABELS, f"blk() 用了块表里没有的 id：{bid}"
+    assert label == _BLOCK_LABELS[bid], (
+        f"块表说明与 blk() 调用点的标签不一致（同一事实写了两处）：{bid}")
+    _CUR["bid"] = bid
+    if _ONLY is not None and bid not in _ONLY:
+        return
+    print("==%s==" % label)
 
 
 def smoke_imports():
@@ -2657,9 +2719,27 @@ def smoke_doc_structure():
     # 为何**不**用尺寸 / 表格判据：面向使用者的合法「升级须知」与"被删块回流"的**行数增量相同**
     # （都是 +5～6 行）⇒ 行数 / 有无表格都**区分不开**二者；改判"文首区不得出现被删内容的
     # **自有短语**"，才能区分"回流"与"合法新增"（误伤面也小）。
-    _CK_PHRASES = ("关于版本号", "本文件不写", "现状数字只允许出现在")
-    assert _CK_PHRASES == ("关于版本号", "本文件不写", "现状数字只允许出现在"), (
-        "文首防回流名单被改动 —— 扩宽/收窄必须先改本断言")
+    # 已知盲区：本判据**只拦"原样写回"**——把被删的话**换个说法**写回文首，静态判据拦不住（要判语义
+    # 须人工）。这与「引述豁免可被刻意误用」同族 ⇒ 不宣称"覆盖完整"。
+    # 名单**当前 11 个短语、对应 9 条被删非空行**；**不是"覆盖完整"**——改写式回流拦不住（见上）。
+    #   被删内容本身（旧文首 L6–9 / L15–19）已不在仓库里，逐句映射留在这里，便于日后核对
+    #   "名单为什么是这 11 个"（改名/改动前先读这张表）：
+    #     A-1 「关于版本号」…「tag 由发布者按发布时机」   → 「关于版本号」
+    #     A-2 「打，正文里写死一份列表…没有任何机器检查会提醒你」→ 「正文里写死一份列表」
+    #     A-3 「另：未单独发布过的开发轮次不另立版本段…」  → 「不另立版本段」
+    #     A-4 「否则文里会出现"CHANGELOG 有、仓库里从没出现过"的版本号」→ 「仓库里从没出现过」
+    #     B-1 「本文件不写"当前状态"数字（当前 N 行 / …）」→ 「本文件不写」「当前 N 行」
+    #     B-2 「…必然失真，而没有任何检查能发现（…README「143 行」…）」→ 「143 行」
+    #     B-3 「可以写的是两类：改动量（191 → 141 行、替换了 12 处 …）」→ 「替换了 12 处」
+    #     B-4 「与标注可复现的实测值。两类都必须在落笔当次用命令核一遍」→ 「落笔当次用命令核一遍」
+    #     B-5 「现状数字只允许出现在有断言守着的地方（…夹具条数）」→ 「现状数字只允许出现在」「夹具条数」
+    _CK_PHRASES = ("关于版本号", "正文里写死一份列表", "不另立版本段", "仓库里从没出现过",
+                   "本文件不写", "当前 N 行", "143 行", "替换了 12 处",
+                   "落笔当次用命令核一遍", "现状数字只允许出现在", "夹具条数")
+    assert _CK_PHRASES == ("关于版本号", "正文里写死一份列表", "不另立版本段", "仓库里从没出现过",
+                           "本文件不写", "当前 N 行", "143 行", "替换了 12 处",
+                           "落笔当次用命令核一遍", "现状数字只允许出现在", "夹具条数"), (
+        "文首防回流名单被改动 —— 扩宽/收窄必须先改本断言，并在 CHANGELOG.md 里说明这次覆盖面的变化")
 
     def _ck_head_hits(text):
         """CHANGELOG 文首区里是否出现"已移除内容"的自有短语（防维护者规程回流）。"""
@@ -2672,8 +2752,8 @@ def smoke_doc_structure():
         "CHANGELOG.md 文首区出现已移除内容的短语 %s —— 维护者规程不应写回文首" % _hit)
     # 判据自身可证：含短语的样本必须触发，干净样本必须不触发（直接调 `_ck_head_hits`）
     _ck_bad = ("# Changelog\n\n> **关于版本号**：已打 tag 的版本以文末为准。\n\n"
-               "## [1.0.0] - 2026-01-01\n")
-    _ck_ok = "# Changelog\n\n> 文首只留面向使用者的内容。\n\n## [1.0.0] - 2026-01-01\n"
+               "## [x.y.z] - 2026-01-01\n")
+    _ck_ok = "# Changelog\n\n> 文首只留面向使用者的内容。\n\n## [x.y.z] - 2026-01-01\n"
     assert _ck_head_hits(_ck_bad), "漏报：文首含被删短语的样本没触发防回流判据"
     assert not _ck_head_hits(_ck_ok), "误报：干净文首样本被防回流判据误伤"
 
@@ -3027,84 +3107,106 @@ def smoke_doc_claims():
     assert n_cases >= 10, f"规则夹具太少（{n_cases}），§③ 的计数断言失去意义"
 
 
-def main():
-    full = "--full" in sys.argv
-    from common import ensure_utf8_stdio
-    ensure_utf8_stdio()          # 必须在**任何输出之前**：否则 Windows 的 cp1252 下第一行就崩
-    print("== import 冒烟 ==")
+_HELP_TEXT = """wechat-worklog-matrix 自检（默认档不碰真机数据与网络）
+
+用法：
+  python scripts/smoke_test.py                 全量默认档
+  python scripts/smoke_test.py --full          再加附加检查（需 openpyxl / zstandard）
+  python scripts/smoke_test.py --list-blocks   列出所有块名与说明
+  python scripts/smoke_test.py --only <块[,块…]>  只跑指定块（可多次给 --only）
+  python scripts/smoke_test.py --jobs <N>      块级并行（N≥2；输出与串行逐字节一致）
+  python scripts/smoke_test.py --help          本帮助
+
+⚠️ --only 是**收窄**：跑子集时末行会写明"其余块未跑"。"""
+
+
+def _run_blocks(full):
+    """按 `BLOCKS` 顺序跑所有块的检查（串行档与 `--_child` 子进程共用；由 `_ONLY` 过滤）。
+
+    只把 30 处块标题换成 `blk(...)`，**不动任何 `check(...)` 的调用位置与顺序** —— 默认档
+    输出才能逐字节不变。
+    """
+    blk("imports", " import 冒烟 ")
     check(f"{len(MODULES)} 个模块 import", smoke_imports)
-    print("== common 单测 ==")
+    blk("common", " common 单测 ")
     check("serial/col_index/col_letter", smoke_common)
-    print("== 消息正文解码（真机乱码根因）==")
+    blk("decoding", " 消息正文解码（真机乱码根因）")
     check("ZSTD 降级/appmsg 引用/sysmsg 归一化", smoke_message_decoding)
-    print("== 守卫与稳健性（真跑暴露）==")
+    blk("guards", " 守卫与稳健性（真跑暴露）")
     check("空映射不给追加行/剥离不剥空/null 日期不崩", smoke_guards_and_robustness)
-    print("== 落表前的两道复核（起始行算错会覆盖历史数据）==")
+    blk("writeguard", " 落表前的两道复核（起始行算错会覆盖历史数据）")
     check("目标行非空即拒 / 上批区间重叠即拒 / --force 可绕过", smoke_write_guard)
-    print("== 云文档快照抽象层 ==")
+    blk("snapshot", " 云文档快照抽象层 ")
     check("稀疏->密集网格 / GridSheet 接口 / 追加行", smoke_snapshot_grid)
     check("raw.json 多形态识别", smoke_snapshot_raw_parse)
     check("payload -> kdocs rangeData", smoke_kdocs_payload)
     check("probe.analyze_workbook 吃 GridWorkbook", smoke_probe_analyze)
-    print("== 岗位复用共用层（final 内置 / position_reuse 共用）==")
+    blk("reuse", " 岗位复用共用层（final 内置 / position_reuse 共用）")
     check("列解析/历史只读到 end_row/只填空缺/批内传播", smoke_reuse_position)
-    print("== build_matrix_rows 单测 ==")
+    blk("build", " build_matrix_rows 单测 ")
     check("norm_o/ids/QMAP", smoke_build)
-    print("== 判定规则一致性（防漂移）==")
+    blk("ruleconsistency", " 判定规则一致性（防漂移）")
     check("outcome 标签 + 规则开关三处同步", smoke_rule_consistency)
-    print("== 「需求归类」取值域（提示词 ↔ 代码 ↔ 线上台账）==")
+    blk("qvalues", " 「需求归类」取值域（提示词 ↔ 代码 ↔ 线上台账）")
     check("Q 枚举/白名单/归一映射/文档四处一致", smoke_q_values)
-    print("== 判定夹具完备性（行为验证的 CI 侧；真实判定由 rules_check.py 跑）==")
+    blk("fixtures", " 判定夹具完备性（行为验证的 CI 侧；真实判定由 rules_check.py 跑）")
     check("覆盖/自洽/锚点/枚举/脱敏/open 登记 共 7 项", smoke_rules_fixtures)
-    print("== rules_check 的正向路径（渲染 / 盲评 case / verify 分类）==")
+    blk("rulescheck", " rules_check 的正向路径（渲染 / 盲评 case / verify 分类）")
     check("渲染无残留占位符 + case 不泄答案 + 三类差异分类", smoke_rules_check_positive)
-    print("== 文档里的 CLI 形状 vs argparse ==")
+    blk("doccli", " 文档里的 CLI 形状 vs argparse ")
     check("文档里的 CLI 形状（SKILL.md + README 的 --config 位置）", smoke_doc_cli_flags)
-    print("== CLI 守卫契约（宁可报错也不静默改写）==")
+    blk("clicontract", " CLI 守卫契约（宁可报错也不静默改写）")
     check("缺关键输入即报错 / .xls 给可执行提示 / 入口 --help", smoke_cli_contract)
-    print("== 输入路径守卫（路径不存在/坏 JSON 一律友好报错）==")
+    blk("pathguards", " 输入路径守卫（路径不存在/坏 JSON 一律友好报错）")
     check("16 个场景：无裸 traceback、退出码非 0、有提示", smoke_path_guards)
-    print("== 不许静默降级（P0 回归）==")
+    blk("nosilent", " 不许静默降级（P0 回归）")
     check("表格来源不存在时不产出 payload", smoke_no_silent_fallback)
-    print("== preview / final / --new-rows 的列契约 ==")
+    blk("preview", " preview / final / --new-rows 的列契约 ")
     check("旧格式或缺列的输入早报，不静默 0 条", smoke_preview_contract)
-    print("== 子代理产出契约（坏值不许顺到 final）==")
+    blk("agentcontract", " 子代理产出契约（坏值不许顺到 final）")
     check("四类硬拦 + 契约外字段只告警 + 无跳过开关", smoke_agent_contract)
-    print("== 云文档通道表内复用 + 快照覆盖范围 ==")
+    blk("snapshotcov", " 云文档通道表内复用 + 快照覆盖范围 ")
     check("coverage 元数据 / 两条检查 / 复用真生效 / 旧结论不复活", smoke_snapshot_coverage)
-    print("== SKILL.md frontmatter 长度额度（平台上限 1024）==")
+    blk("frontmatter", " SKILL.md frontmatter 长度额度（平台上限 1024）")
     check("description 与整块都不超限（超限不报错，只能靠断言守）", smoke_skill_frontmatter)
-    print("== 文档分层（SKILL.md 写规则 / workflow-notes·README 不得逐字复述）==")
+    blk("doclayering", " 文档分层（SKILL.md 写规则 / workflow-notes·README 不得逐字复述）")
     check("notes / README 不得逐字复述 SKILL.md 的规则", smoke_doc_layering)
-    print("== 文档引用可解析（文件 / 链接 / 章节指针 / 参数速查表归属）==")
+    blk("docrefs", " 文档引用可解析（文件 / 链接 / 章节指针 / 参数速查表归属）")
     check("四类引用都指向真实目标（改章节名后漏同步会被抓住）", smoke_doc_refs)
-    print("== 文档结构（层级 / 同父重名 / 编号连续 / 清单 vs 磁盘）==")
+    blk("docstructure", " 文档结构（层级 / 同父重名 / 编号连续 / 清单 vs 磁盘）")
     check("结构与清单都在磁盘上兑现（新增文件必须同步文档）", smoke_doc_structure)
-    print("== 文档声明 vs 事实（术语 / 作废说法 / 不写编年 / 关键计数）==")
+    blk("docclaims", " 文档声明 vs 事实（术语 / 作废说法 / 不写编年 / 关键计数）")
     check("术语与「不写编年」声明在位、计数与夹具/CI 实际数一致", smoke_doc_claims)
-    print("== 离线端到端（preview CSV → final → payload → kdocs rangeData）==")
+    blk("e2e", " 离线端到端（preview CSV → final → payload → kdocs rangeData）")
     check("列映射/起始行/岗位复用/日期序列号/分批", smoke_offline_e2e)
-    print("== 仓库卫生 ==")
+    blk("hygiene", " 仓库卫生 ")
     check("运行产物与绝对路径不入库 / 全文件合法 UTF-8", smoke_repo_hygiene)
     check("含只读文件的临时目录能真删掉（Windows 只读位 / %TEMP% 残留）", smoke_tmp_cleanup)
-    print("== 非 UTF-8 控制台（cp1252，Windows runner 的真实条件）==")
+    blk("cp1252", " 非 UTF-8 控制台（cp1252，Windows runner 的真实条件）")
     check("输出中文不崩（含真打中文错误的守卫路径）", smoke_cp1252_stdio)
-    print("== 依赖缺失时的提示 ==")
+    blk("deps", " 依赖缺失时的提示 ")
     check("缺 openpyxl 给可执行提示（非裸 ImportError）", smoke_openpyxl_hint)
-    print("== position_reuse ==")
+    blk("positionreuse", " position_reuse ")
     check("import position_reuse", smoke_position_reuse)
     if full:
         check("positions/快照通道 Cell 读取", smoke_position_reuse_openpyxl)
         check("本地表格通道：probe 读 xlsx + 追加起始行", smoke_local_channel_full)
         check("ZSTD 压缩正文的成功解码（含压缩的引用回复）", smoke_zstd_decode_full)
-    else:
+    elif _ONLY is None or "positionreuse" in _ONLY:
         print("  （加 --full 启用附加检查）")
 
-    # ---- 元检查：文档里声明的项数必须等于实际项数（不计入它自己）----
-    # README 记的是**默认模式**（不带 --full）的项数，所以 --full 下跳过。
+
+def _run_meta(full):
+    """元检查：文档里声明的项数必须等于实际项数（不计入它自己）。
+
+    README 记的是**默认模式**（不带 --full）的项数，所以 --full 下跳过。
+    `--only` 是子集，项数天然少于全量 ⇒ 也在函数里 Skip（不静默、更不当成 FAIL）。
+    """
     _total = STAT["ok"] + STAT["skip"] + len(FAIL)
 
     def _doc_count_matches():
+        if _ONLY is not None:
+            raise Skip("--only 是子集，项数天然少于 README 声明的全量 —— 核项数请在默认档跑")
         if full:
             raise Skip("--full 的项数与 README 记的默认项数不同，用默认模式核")
         import re as _re
@@ -3114,12 +3216,14 @@ def main():
         assert int(m.group(1)) == _total, \
             f"README 写的是 {m.group(1)} 项，实际是 {_total} 项（改自检后要同步 README）"
 
-    print("== 自检项数 vs 文档 ==")
+    blk("meta", " 自检项数 vs 文档 ")
     check("README 声明的项数 == 实际项数（防文档漂移）", _doc_count_matches, count=False)
 
     # 另一头：`--full` 相对默认**多跑几项**也要与 README 一致。只守默认数会漏掉
     # "加了一条 --full 专属检查、却忘了改文档里的增量" —— 两个方向各在一个模式下核才闭环。
     def _doc_full_delta_matches():
+        if _ONLY is not None:
+            raise Skip("--only 是子集，项数天然少于 README 声明的全量 —— 核项数请在默认档跑")
         if not full:
             raise Skip("「--full 再加 N 项」只能在 --full 下核（默认模式拿不到增量）")
         import re as _re
@@ -3133,10 +3237,162 @@ def main():
 
     check("README 的「--full 再加 N 项」== 实际增量（另一头）", _doc_full_delta_matches, count=False)
 
+
+def _run_parallel(full, jobs):
+    """块级并行：每个块起一个**子进程**（不能用线程）。
+
+    本仓自检里有**进程级全局状态改动** —— `del sys.modules[...]`（模拟"没装依赖"）、
+    `global _GITIGNORE_GLOBS`（缓存）—— 线程并发会让检查互相踩；子进程天然隔离。
+    线程池**只用来等子进程**，不跑任何检查。父进程按 `BLOCKS` 顺序原样合并各子进程 stdout
+    （剥掉 `##CHILD##` trailer），最后由调用方跑 `meta` 块（它是"汇总后核数"）。
+    """
+    import concurrent.futures
+    import json as _json
+
+    # 待跑块 = 选中块（受 --only 影响）减去 meta，顺序照 BLOCKS
+    target = [bid for bid, _ in BLOCKS
+              if bid != "meta" and (_ONLY is None or bid in _ONLY)]
+
+    def _run_child(bid):
+        cmd = [sys.executable, os.path.abspath(__file__), "--_child", bid]
+        if full:
+            cmd.append("--full")
+        p = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        return p.returncode, p.stdout, p.stderr
+
+    outs = {}
+    with concurrent.futures.ThreadPoolExecutor(max_workers=jobs) as ex:
+        futs = {bid: ex.submit(_run_child, bid) for bid in target}
+        for bid in target:                 # 按 BLOCKS 顺序取回，保证合并顺序确定
+            outs[bid] = futs[bid].result()
+
+    marker = "##CHILD## "
+    for bid in target:
+        rc, out, err = outs[bid]
+        text = out.decode("utf-8", "replace")
+        pos = text.find(marker)
+        if rc not in (0, 1) or pos < 0:
+            sys.stderr.write(err.decode("utf-8", "replace"))
+            sys.stderr.write(
+                f"\n✗ 子进程块 {bid} 异常：rc={rc}，"
+                f"{'缺 ##CHILD## trailer' if pos < 0 else 'stderr 见上'}\n")
+            sys.exit(2)
+        trailer = _json.loads(text[pos + len(marker):].strip())
+        STAT["ok"] += int(trailer.get("ok", 0))
+        STAT["skip"] += int(trailer.get("skip", 0))
+        FAIL.extend(trailer.get("fail", []))
+        # 子进程 stdout 已完成平台换行翻译；统一成 \n 交本进程 stdout 按平台翻译，逐字节对齐串行档
+        sys.stdout.write(text[:pos].replace("\r\n", "\n"))
+
+
+def main():
+    from common import ensure_utf8_stdio
+    ensure_utf8_stdio()          # 必须在**任何输出之前**：否则 Windows 的 cp1252 下第一行就崩
+
+    global _ONLY, _ONLY_ORDER
+    argv = sys.argv[1:]
+    full = "--full" in argv
+    only_ids = []
+    jobs = 1
+    child_bid = None
+
+    i = 0
+    while i < len(argv):
+        a = argv[i]
+        if a in ("--help", "-h"):
+            print(_HELP_TEXT)
+            sys.exit(0)
+        elif a == "--list-blocks":
+            for bid, label in BLOCKS:
+                print("%s  %s" % (bid, label.strip()))
+            print("共 %d 块；--only 里用块名，逗号分隔" % len(BLOCKS))
+            sys.exit(0)
+        elif a == "--only" or a.startswith("--only="):
+            if a == "--only":
+                if i + 1 >= len(argv) or argv[i + 1].startswith("--"):
+                    sys.stderr.write("--only 后面要跟块名（逗号分隔，如 --only docstructure，空值视为报错）\n")
+                    sys.exit(2)
+                val = argv[i + 1]
+                i += 1
+            else:
+                val = a[len("--only="):]
+            if not val:
+                sys.stderr.write("--only 后面要跟块名（逗号分隔，如 --only docstructure，空值视为报错）\n")
+                sys.exit(2)
+            for x in val.split(","):
+                if x and x not in only_ids:
+                    only_ids.append(x)
+        elif a == "--jobs" or a.startswith("--jobs="):
+            if a == "--jobs":
+                if i + 1 >= len(argv) or argv[i + 1].startswith("--"):
+                    sys.stderr.write("--jobs 需要一个整数（≥1）\n")
+                    sys.exit(2)
+                val = argv[i + 1]
+                i += 1
+            else:
+                val = a[len("--jobs="):]
+            try:
+                jobs = int(val)
+            except ValueError:
+                sys.stderr.write(f"--jobs 需要一个整数（≥1），收到 {val!r}\n")
+                sys.exit(2)
+            if jobs < 1:
+                sys.stderr.write(f"--jobs 需要 ≥1，收到 {jobs}\n")
+                sys.exit(2)
+        elif a == "--_child":
+            if i + 1 >= len(argv):
+                sys.stderr.write("--_child 需要一个块名\n")
+                sys.exit(2)
+            child_bid = argv[i + 1]
+            i += 1
+        elif a == "--full":
+            pass
+        # 其它未知参数：沿用旧行为（忽略），不因此报错
+        i += 1
+
+    if only_ids:
+        unknown = [b for b in only_ids if b not in _BLOCK_LABELS]
+        if unknown:
+            sys.stderr.write(f"--only 里有未知块名 {unknown}；用 --list-blocks 看全部块名\n")
+            sys.exit(2)
+
+    if child_bid is not None:
+        if child_bid not in _BLOCK_LABELS:
+            sys.stderr.write(f"--_child 未知块名 {child_bid!r}\n")
+            sys.exit(2)
+        _ONLY = {child_bid}
+        _ONLY_ORDER = [child_bid]
+    elif only_ids:
+        _ONLY = set(only_ids)
+        _ONLY_ORDER = only_ids
+    else:
+        _ONLY = None
+        _ONLY_ORDER = []
+
+    if child_bid is None and _ONLY is not None:
+        print("⚠️ --only 模式：只跑 %s（共 %d 块中的 %d 块）—— 不是全量"
+              % (_ONLY_ORDER, len(BLOCKS), len(_ONLY)))
+
+    if jobs >= 2 and child_bid is None:
+        _run_parallel(full, jobs)
+    else:
+        _run_blocks(full)
+
+    if child_bid is not None:
+        import json as _json
+        print("##CHILD## " + _json.dumps(
+            {"ok": STAT["ok"], "skip": STAT["skip"], "fail": FAIL}, ensure_ascii=False))
+        sys.exit(1 if FAIL else 0)
+
+    _run_meta(full)
+
     print()
     if FAIL:
         print(f"✗ 冒烟失败 {len(FAIL)} 项（通过 {STAT['ok']}，跳过 {STAT['skip']}）：{FAIL}")
         sys.exit(1)
+    if _ONLY is not None:
+        print(f"✓ 选定块全部通过（{STAT['ok']} 项，仅 {_ONLY_ORDER}；其余块未跑）")
+        return
     tail = f"，{STAT['skip']} 项跳过" if STAT["skip"] else ""
     print(f"✓ 全部通过（{STAT['ok']} 项{tail}）")
     if STAT["skip"]:
