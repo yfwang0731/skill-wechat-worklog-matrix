@@ -2650,6 +2650,33 @@ def smoke_doc_structure():
         f"磁盘 references/ 下有文件没进「{_mk}」表：{sorted(_on_disk - _in_tbl)}"
         "（表漏列了 —— 新增文件要进表）")
 
+    # ---- ⑧ CHANGELOG 文首区不得回填「维护者规程」（按读者分层后的防回流）----
+    # 现在时因果：文首那两块维护者规程（"版本位怎么定"、"当前状态数字纪律"）已移除 —— 它们是
+    # **本仓之外**的开发者规则文件里的常驻内容，不在 CHANGELOG 里重复；文首只留面向使用者的
+    # 介绍、"关于本文件里的数字"与脱敏声明、文末导航。
+    # 为何**不**用尺寸 / 表格判据：面向使用者的合法「升级须知」与"被删块回流"的**行数增量相同**
+    # （都是 +5～6 行）⇒ 行数 / 有无表格都**区分不开**二者；改判"文首区不得出现被删内容的
+    # **自有短语**"，才能区分"回流"与"合法新增"（误伤面也小）。
+    _CK_PHRASES = ("关于版本号", "本文件不写", "现状数字只允许出现在")
+    assert _CK_PHRASES == ("关于版本号", "本文件不写", "现状数字只允许出现在"), (
+        "文首防回流名单被改动 —— 扩宽/收窄必须先改本断言")
+
+    def _ck_head_hits(text):
+        """CHANGELOG 文首区里是否出现"已移除内容"的自有短语（防维护者规程回流）。"""
+        return [p for p in _CK_PHRASES if p in text.split("## [")[0]]
+
+    _ck = open(os.path.join(ROOT, "CHANGELOG.md"), encoding="utf-8").read()
+    assert "## [" in _ck, "CHANGELOG.md 找不到版本段标题（`## [`）—— 结构变了？"
+    _hit = _ck_head_hits(_ck)
+    assert not _hit, (
+        "CHANGELOG.md 文首区出现已移除内容的短语 %s —— 维护者规程不应写回文首" % _hit)
+    # 判据自身可证：含短语的样本必须触发，干净样本必须不触发（直接调 `_ck_head_hits`）
+    _ck_bad = ("# Changelog\n\n> **关于版本号**：已打 tag 的版本以文末为准。\n\n"
+               "## [1.0.0] - 2026-01-01\n")
+    _ck_ok = "# Changelog\n\n> 文首只留面向使用者的内容。\n\n## [1.0.0] - 2026-01-01\n"
+    assert _ck_head_hits(_ck_bad), "漏报：文首含被删短语的样本没触发防回流判据"
+    assert not _ck_head_hits(_ck_ok), "误报：干净文首样本被防回流判据误伤"
+
     # ---- 扫描器自检 ----
     _synth = "# T\n\n```\n# not a heading\n```\n\n## A\n\n### B\n\n### B\n\n#### C\n"
     got = [x[2] for x in _headings_of_text(_synth)]
@@ -2953,7 +2980,7 @@ def smoke_doc_claims():
         "漏报：豁免词离得老远仍然生效 —— 判据退化成了「同行出现即可」"
     assert _tag_hit("已打 tag 的是 `v1.0.0` 与 `v1.0.1`，请据此 checkout。"), \
         "漏报：写死的 tag 枚举没被抓到"
-    assert not _tag_hit("**已打 tag 的版本以文末「版本链接」区为准，此处不列举**"), \
+    assert not _tag_hit("按本仓约定，已打 tag 的版本只在文末「版本链接」区列出，正文不逐条列举"), \
         "误报：不写死枚举的表述被当成违规"
     assert not _tag_hit("CHANGELOG 头部原写「已打 tag 的是 v1.0.0 与 v1.0.1」，发布同一分钟就错了"), \
         "误报：引述旧写法被当成了现行依赖"
